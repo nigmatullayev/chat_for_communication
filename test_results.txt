@@ -1,0 +1,204 @@
+
+🔍 Checking server availability...
+✓ Server found on port 8030
+
+============================================================
+BACKEND QA TESTING SUITE
+============================================================
+
+============================================================
+TEST: Login with valid credentials
+============================================================
+✓ PASS: Login with valid credentials
+✓ PASS: Response contains tokens and user data
+✓ PASS: User data is correct
+
+============================================================
+TEST: Login with invalid username
+============================================================
+✓ PASS: Login with invalid username returns 401
+
+============================================================
+TEST: Login with invalid password
+============================================================
+✓ PASS: Login with invalid password returns 401
+
+============================================================
+TEST: Login with missing fields
+============================================================
+✓ PASS: Login without password returns error
+✓ PASS: Login without username returns error
+
+============================================================
+TEST: Refresh access token
+============================================================
+✓ PASS: Token refresh successful
+✓ PASS: New access token returned
+
+============================================================
+TEST: Refresh with invalid token
+============================================================
+✓ PASS: Invalid refresh token returns 401
+
+============================================================
+TEST: Get current user profile
+============================================================
+✓ PASS: Get current user profile
+✓ PASS: User profile contains required fields
+
+============================================================
+TEST: List users
+============================================================
+✓ PASS: List users successful
+✓ PASS: Response is a list
+
+============================================================
+TEST: List users with search query
+============================================================
+✓ PASS: List users with search
+✓ PASS: Admin users excluded from search results
+
+============================================================
+TEST: Update user profile
+============================================================
+✓ PASS: Update profile successful
+✓ PASS: Profile bio updated correctly
+
+============================================================
+TEST: Update profile with duplicate username
+============================================================
+✓ PASS: Update username handles duplicate correctly
+
+============================================================
+TEST: Change password with wrong old password
+============================================================
+✓ PASS: Change password with wrong old password returns error
+
+============================================================
+TEST: Get user by ID
+============================================================
+✓ PASS: Get user by ID successful
+
+============================================================
+TEST: Follow user
+============================================================
+✓ PASS: Follow user successful
+
+============================================================
+TEST: Get follow status
+============================================================
+✓ PASS: Get follow status successful
+
+============================================================
+TEST: Unfollow user
+============================================================
+✓ PASS: Unfollow user successful
+
+============================================================
+TEST: Get non-existent user
+============================================================
+✓ PASS: Get non-existent user returns 404
+
+============================================================
+TEST: Get conversations list
+============================================================
+✓ PASS: Get conversations successful
+✓ PASS: Conversations is a list
+
+============================================================
+TEST: Get chat history
+============================================================
+✓ PASS: Get chat history successful
+✓ PASS: Chat history is a list
+
+============================================================
+TEST: Upload invalid file type
+============================================================
+✓ PASS: Invalid file type rejected
+
+============================================================
+TEST: Admin: List all users
+============================================================
+✓ PASS: Admin list users successful
+✓ PASS: Admin can see all users including admins
+
+============================================================
+TEST: Admin: Create new user
+============================================================
+✓ PASS: Admin create user successful
+✓ PASS: Created user has correct username
+
+============================================================
+TEST: Admin: Create user with duplicate username
+============================================================
+✓ PASS: Duplicate username rejected
+
+============================================================
+TEST: Admin: Get audit logs
+============================================================
+✓ PASS: Admin get audit logs successful
+✓ PASS: Audit logs is a list
+
+============================================================
+TEST: Admin: Toggle user active status
+============================================================
+✓ PASS: Toggle user active status successful
+
+============================================================
+TEST: Admin: Delete user
+============================================================
+✓ PASS: Admin delete user successful
+
+============================================================
+TEST: Admin: Cannot delete own account
+============================================================
+✓ PASS: Admin cannot delete own account
+
+============================================================
+TEST: Unauthorized access without token
+============================================================
+✓ PASS: Unauthorized access returns 401
+
+============================================================
+TEST: Access with invalid token
+============================================================
+✓ PASS: Invalid token returns 401
+
+============================================================
+TEST: Regular user cannot access admin endpoints
+============================================================
+✓ PASS: Skipped: Current user is admin (expected to have access)
+
+============================================================
+TEST: List users with empty search
+============================================================
+✓ PASS: Empty search query handled correctly
+
+============================================================
+TEST: Search with special characters
+============================================================
+✓ PASS: Special characters in search handled correctly
+
+============================================================
+TEST: Get chat history with large limit
+============================================================
+✓ PASS: Large limit parameter handled
+
+============================================================
+TEST: Get chat history with negative limit
+============================================================
+✓ PASS: Negative limit parameter handled
+
+============================================================
+TEST: Logout
+============================================================
+✓ PASS: Logout successful
+
+============================================================
+TEST SUMMARY
+============================================================
+✓ Passed: 48
+✗ Failed: 0
+Total: 48
+
+============================================================

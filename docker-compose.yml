@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  web:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./uploads:/app/uploads
+      - ./chat_video.db:/app/chat_video.db
+    environment:
+      - SECRET_KEY=your-secret-key-change-in-production
+      - DATABASE_URL=sqlite:///./chat_video.db
+    command: >
+      sh -c "python init_db.py && uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload"
+    restart: unless-stopped
+

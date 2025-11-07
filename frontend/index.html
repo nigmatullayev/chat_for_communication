@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat Messenger</title>
+    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <!-- Login Screen -->
+    <div id="loginScreen" class="screen">
+        <div class="login-container">
+            <div class="login-header">
+                <i class="fas fa-comments"></i>
+                <h1>Chat Messenger</h1>
+                <p>Connect with friends</p>
+            </div>
+            <form id="loginForm" class="login-form">
+                <div class="form-group">
+                    <i class="fas fa-user"></i>
+                    <input type="text" id="loginUsername" placeholder="Username" required>
+                </div>
+                <div class="form-group">
+                    <i class="fas fa-lock"></i>
+                    <input type="password" id="loginPassword" placeholder="Password" required>
+                </div>
+                <button type="submit" class="btn-primary">
+                    <i class="fas fa-sign-in-alt"></i> Login
+                </button>
+                <div id="loginError" class="error-message"></div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Main App Screen -->
+    <div id="appScreen" class="screen hidden">
+        <!-- Desktop Sidebar (left side for tablets/desktops) -->
+        <div class="desktop-sidebar">
+            <div class="sidebar-header">
+                <div class="user-info">
+                    <img id="desktopUserAvatar" src="/static/default-avatar.png" alt="Avatar" class="avatar-small">
+                    <div>
+                        <div id="desktopUserName"></div>
+                        <div class="user-role" id="desktopUserRole"></div>
+                    </div>
+                </div>
+            </div>
+            <nav class="desktop-nav-menu">
+                <button class="nav-item active" data-view="chat">
+                    <i class="fas fa-comments"></i>
+                    <span>Chat</span>
+                </button>
+                <button class="nav-item" data-view="search">
+                    <i class="fas fa-search"></i>
+                    <span>Search</span>
+                </button>
+                <button class="nav-item" data-view="profile">
+                    <i class="fas fa-user-circle"></i>
+                    <span>Profile</span>
+                </button>
+                <button class="nav-item" data-view="settings">
+                    <i class="fas fa-cog"></i>
+                    <span>Settings</span>
+                </button>
+                <button id="logoutBtn" class="nav-item logout">
+                    <i class="fas fa-sign-out-alt"></i>
+                    <span>Logout</span>
+                </button>
+            </nav>
+        </div>
+
+        <!-- Main Content Area -->
+        <div class="main-content-wrapper">
+            <!-- Chat List View -->
+            <div id="chatListView" class="view-container active">
+                <div class="view-header">
+                    <h1>Messages</h1>
+                </div>
+                <div class="conversations-list" id="conversationsList">
+                    <!-- Conversations will be loaded here -->
+                </div>
+            </div>
+
+            <!-- Search View -->
+            <div id="searchView" class="view-container hidden">
+                <div class="view-header">
+                    <h1>Search</h1>
+                </div>
+                <div class="search-container">
+                    <div class="search-input-wrapper">
+                        <i class="fas fa-search"></i>
+                        <input type="text" id="searchInput" placeholder="Search users..." class="search-input">
+                        <button id="clearSearchBtn" class="clear-search-btn hidden">
+                            <i class="fas fa-times"></i>
+                        </button>
+                    </div>
+                    <div id="recentSearches" class="recent-searches hidden">
+                        <div class="recent-searches-header">
+                            <h3>Recent</h3>
+                            <button id="clearAllRecentBtn" class="clear-all-btn">Clear all</button>
+                        </div>
+                        <div id="recentSearchesList" class="recent-searches-list">
+                            <!-- Recent searches will be loaded here -->
+                        </div>
+                    </div>
+                    <div id="searchResults" class="search-results">
+                        <div class="empty-search-state">
+                            <i class="fas fa-search"></i>
+                            <p>Search for users by username</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Profile View (Own Profile) -->
+            <div id="profileView" class="view-container hidden">
+                <div class="profile-header">
+                    <h1>Profile</h1>
+                    <button id="editProfileBtn" class="btn-icon">
+                        <i class="fas fa-edit"></i>
+                    </button>
+                </div>
+                <div class="profile-content">
+                    <div class="profile-avatar-section">
+                        <img id="profileAvatar" src="/static/default-avatar.png" alt="Avatar" class="profile-avatar-large">
+                        <label for="avatarInput" class="avatar-upload-btn">
+                            <i class="fas fa-camera"></i>
+                            <input type="file" id="avatarInput" accept="image/*" class="hidden">
+                        </label>
+                    </div>
+                    <div class="profile-info">
+                        <div id="profileUsername" class="profile-username"></div>
+                        <div id="profileName" class="profile-name"></div>
+                        <div id="profileBio" class="profile-bio"></div>
+                    </div>
+                    <div class="profile-actions">
+                        <button id="editProfileActionBtn" class="btn-primary-outline">
+                            <i class="fas fa-edit"></i> Edit Profile
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- Edit Profile Form (hidden by default) -->
+                <div id="editProfileForm" class="profile-edit-form hidden">
+                    <form id="profileForm">
+                        <div class="form-group">
+                            <label>Username</label>
+                            <input type="text" id="profileUsernameInput" required>
+                        </div>
+                        <div class="form-group">
+                            <label>First Name</label>
+                            <input type="text" id="profileFirstName">
+                        </div>
+                        <div class="form-group">
+                            <label>Last Name</label>
+                            <input type="text" id="profileLastName">
+                        </div>
+                        <div class="form-group">
+                            <label>Bio</label>
+                            <textarea id="profileBioInput" rows="3" placeholder="Tell us about yourself..."></textarea>
+                        </div>
+                        <div class="form-actions">
+                            <button type="button" class="btn-secondary" id="cancelEditProfile">Cancel</button>
+                            <button type="submit" class="btn-primary">Save</button>
+                        </div>
+                        <div id="profileMessage" class="message"></div>
+                    </form>
+                </div>
+            </div>
+
+            <!-- Settings View -->
+            <div id="settingsView" class="view-container hidden">
+                <div class="view-header">
+                    <h1>Settings</h1>
+                </div>
+                <div class="settings-content">
+                    <div class="settings-section">
+                        <h2>Change Password</h2>
+                        <form id="passwordForm" class="settings-form">
+                            <div class="form-group">
+                                <label>Old Password</label>
+                                <input type="password" id="oldPassword" required>
+                            </div>
+                            <div class="form-group">
+                                <label>New Password</label>
+                                <input type="password" id="newPassword" required>
+                            </div>
+                            <button type="submit" class="btn-primary">
+                                <i class="fas fa-key"></i> Change Password
+                            </button>
+                            <div id="profileMessage" class="message"></div>
+                        </form>
+                    </div>
+                    <div class="settings-section">
+                        <h2>Notifications</h2>
+                        <div class="notification-setting">
+                            <label>Enable Web Notifications</label>
+                            <button id="enableNotificationsBtn" class="btn-toggle">
+                                <span class="toggle-slider"></span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- User Profile View (Viewing other users) -->
+            <div id="userProfileView" class="view-container hidden">
+                <div class="profile-header">
+                    <button class="btn-back" id="backFromUserProfile">
+                        <i class="fas fa-arrow-left"></i>
+                    </button>
+                    <h1>Profile</h1>
+                </div>
+                <div class="profile-content">
+                    <div class="profile-avatar-section">
+                        <img id="userProfileAvatar" src="/static/default-avatar.png" alt="Avatar" class="profile-avatar-large">
+                    </div>
+                    <div class="profile-info">
+                        <div id="userProfileUsername" class="profile-username"></div>
+                        <div id="userProfileName" class="profile-name"></div>
+                        <div id="userProfileBio" class="profile-bio"></div>
+                    </div>
+                    <div class="profile-actions">
+                        <button id="followBtn" class="btn-primary-outline">
+                            <i class="fas fa-user-plus"></i> Follow
+                        </button>
+                        <button id="messageUserBtn" class="btn-primary">
+                            <i class="fas fa-comment"></i> Message
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Chat View -->
+            <div id="chatView" class="view-container hidden">
+                <div class="chat-header">
+                    <button class="btn-back" id="backFromChat">
+                        <i class="fas fa-arrow-left"></i>
+                    </button>
+                    <div class="chat-user-info">
+                        <img id="chatUserAvatar" src="/static/default-avatar.png" alt="Avatar" class="avatar-small">
+                        <div>
+                            <div id="chatUserName"></div>
+                            <div class="status-text" id="chatUserStatus">
+                                <i class="fas fa-circle"></i> Online
+                            </div>
+                        </div>
+                    </div>
+                    <div class="chat-actions">
+                        <button id="callBtn" class="btn-icon" title="Video Call">
+                            <i class="fas fa-video"></i>
+                        </button>
+                        <button id="phoneBtn" class="btn-icon" title="Audio Call">
+                            <i class="fas fa-phone"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="chat-messages" id="chatMessages">
+                    <!-- Messages will be displayed here -->
+                </div>
+
+                <div class="chat-input-container">
+                    <div id="typingIndicator" class="typing-indicator hidden">
+                        <i class="fas fa-circle"></i>
+                        <span id="typingUser"></span> is typing...
+                    </div>
+                    <div class="media-preview hidden" id="mediaPreview">
+                        <div class="media-preview-item">
+                            <img id="previewImage" src="" alt="Preview" class="hidden">
+                            <video id="previewVideo" src="" controls class="hidden"></video>
+                            <button class="btn-remove-media" id="removeMediaBtn">
+                                <i class="fas fa-times"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="chat-input-wrapper">
+                        <div class="input-actions">
+                            <button id="attachImageBtn" class="btn-attach" title="Send Image">
+                                <i class="fas fa-image"></i>
+                            </button>
+                            <button id="attachVideoBtn" class="btn-attach" title="Send Video">
+                                <i class="fas fa-video"></i>
+                            </button>
+                            <button id="attachLocationBtn" class="btn-attach" title="Send Location">
+                                <i class="fas fa-map-marker-alt"></i>
+                            </button>
+                        </div>
+                        <textarea id="messageInput" placeholder="Type a message..." rows="1"></textarea>
+                        <button id="sendBtn" class="btn-send" title="Send">
+                            <i class="fas fa-paper-plane"></i>
+                        </button>
+                    </div>
+                    <input type="file" id="imageInput" accept="image/*" class="hidden">
+                    <input type="file" id="videoInput" accept="video/*" class="hidden">
+                </div>
+
+                <!-- Message Context Menu -->
+                <div id="messageContextMenu" class="context-menu hidden">
+                    <button class="context-menu-item" id="editMessageBtn">
+                        <i class="fas fa-edit"></i> Edit
+                    </button>
+                    <button class="context-menu-item" id="deleteMessageBtn">
+                        <i class="fas fa-trash"></i> Delete
+                    </button>
+                    <button class="context-menu-item" id="reactMessageBtn">
+                        <i class="fas fa-smile"></i> React
+                    </button>
+                </div>
+
+                <!-- Reaction Picker -->
+                <div id="reactionPicker" class="reaction-picker hidden">
+                    <button class="reaction-btn" data-reaction="like">👍</button>
+                    <button class="reaction-btn" data-reaction="love">❤️</button>
+                    <button class="reaction-btn" data-reaction="laugh">😂</button>
+                    <button class="reaction-btn" data-reaction="wow">😮</button>
+                    <button class="reaction-btn" data-reaction="sad">😢</button>
+                    <button class="reaction-btn" data-reaction="angry">😠</button>
+                </div>
+            </div>
+
+            <!-- Video Call Container -->
+            <div id="callContainer" class="hidden">
+                <div class="call-overlay">
+                    <div class="call-content">
+                        <!-- Call Header -->
+                        <div class="call-header">
+                            <div class="call-info">
+                                <div id="callTypeIndicator" class="call-type video">Video Call</div>
+                                <div id="callStatus" class="call-status">Connecting...</div>
+                            </div>
+                            <div class="call-timer" id="callTimer" style="display: none;">
+                                <i class="fas fa-clock"></i>
+                                <span id="callTimerText">00:00</span>
+                            </div>
+                        </div>
+                        
+                        <!-- Remote Video (Main) -->
+                        <div class="remote-video-container">
+                            <video id="remoteVideo" autoplay playsinline></video>
+                            <div class="remote-video-placeholder" id="remoteVideoPlaceholder">
+                                <div class="placeholder-avatar">
+                                    <i class="fas fa-user"></i>
+                                </div>
+                                <div class="placeholder-name" id="remoteVideoName"></div>
+                            </div>
+                        </div>
+                        
+                        <!-- Local Video (Small) -->
+                        <div class="local-video-container">
+                            <video id="localVideo" autoplay muted playsinline></video>
+                            <div class="local-video-overlay">
+                                <button class="btn-minimize-video" id="minimizeVideoBtn" title="Minimize">
+                                    <i class="fas fa-minus"></i>
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <!-- Call Controls -->
+                        <div class="call-controls">
+                            <button id="muteBtn" class="btn-call" title="Mute">
+                                <i class="fas fa-microphone"></i>
+                            </button>
+                            <button id="videoBtn" class="btn-call active" title="Toggle Video">
+                                <i class="fas fa-video"></i>
+                            </button>
+                            <button id="switchCameraBtn" class="btn-call" title="Switch Camera" style="display: none;">
+                                <i class="fas fa-sync-alt"></i>
+                            </button>
+                            <button id="screenShareBtn" class="btn-call" title="Share Screen" style="display: none;">
+                                <i class="fas fa-desktop"></i>
+                            </button>
+                            <button id="holdBtn" class="btn-call" title="Hold">
+                                <i class="fas fa-pause"></i>
+                            </button>
+                            <button id="messageBtn" class="btn-call" title="Send Message">
+                                <i class="fas fa-comment"></i>
+                            </button>
+                            <button id="endCallBtn" class="btn-call-danger" title="End Call">
+                                <i class="fas fa-phone-slash"></i>
+                            </button>
+                        </div>
+                        
+                        <!-- Call Message Input (hidden by default) -->
+                        <div id="callMessageInput" class="call-message-input hidden">
+                            <input type="text" id="callMessageText" placeholder="Type a message..." />
+                            <button id="sendCallMessageBtn" class="btn-send-call-message">
+                                <i class="fas fa-paper-plane"></i>
+                            </button>
+                            <button id="closeCallMessageBtn" class="btn-close-call-message">
+                                <i class="fas fa-times"></i>
+                            </button>
+                        </div>
+                        
+                        <!-- Incoming Call Modal -->
+                        <div id="incomingCall" class="incoming-call hidden">
+                            <div class="incoming-call-content">
+                                <div class="incoming-call-avatar-container">
+                                    <img id="incomingCallAvatar" src="/static/default-avatar.png" alt="Caller" class="incoming-call-avatar">
+                                    <div class="incoming-call-ring"></div>
+                                </div>
+                                <h3 id="incomingCaller" class="incoming-call-name">Unknown</h3>
+                                <div id="incomingCallType" class="incoming-call-type video">Video Call</div>
+                                <div class="call-buttons">
+                                    <button id="acceptCallBtn" class="btn-call-accept" title="Accept">
+                                        <i class="fas fa-phone"></i>
+                                    </button>
+                                    <button id="rejectCallBtn" class="btn-call-danger" title="Reject">
+                                        <i class="fas fa-phone-slash"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Mobile Bottom Navigation -->
+        <div class="mobile-bottom-nav">
+            <button class="nav-item active" data-view="chat">
+                <i class="fas fa-home"></i>
+                <span>Chat</span>
+            </button>
+            <button class="nav-item" data-view="search">
+                <i class="fas fa-search"></i>
+                <span>Search</span>
+            </button>
+            <button class="nav-item" data-view="profile">
+                <img id="navProfileImg" src="/static/default-avatar.png" alt="Profile" class="nav-profile-img">
+                <span>Profile</span>
+            </button>
+        </div>
+    </div>
+
+    <script src="/static/app.js" defer></script>
+</body>
+</html>

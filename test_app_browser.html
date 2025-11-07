@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>App.js Test</title>
+    <style>
+        body {
+            font-family: monospace;
+            padding: 20px;
+            background: #1e1e1e;
+            color: #d4d4d4;
+        }
+        .test-container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        h1 {
+            color: #4ec9b0;
+        }
+        button {
+            background: #007acc;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 10px 5px;
+        }
+        button:hover {
+            background: #005a9e;
+        }
+        #testOutput {
+            background: #252526;
+            border: 1px solid #3e3e42;
+            padding: 20px;
+            border-radius: 4px;
+            min-height: 400px;
+            max-height: 600px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+        .success { color: #4ec9b0; }
+        .error { color: #f48771; }
+        .info { color: #569cd6; }
+    </style>
+</head>
+<body>
+    <div class="test-container">
+        <h1>🧪 App.js Test Suite</h1>
+        <button onclick="runTests()">Run Tests</button>
+        <button onclick="clearOutput()">Clear Output</button>
+        <button onclick="testRecentSearches()">Test Recent Searches Only</button>
+        <div id="testOutput">Click "Run Tests" to start testing...</div>
+    </div>
+
+    <!-- Load the actual app.js -->
+    <script src="/static/app.js"></script>
+    
+    <script>
+        // Capture console output
+        const originalLog = console.log;
+        const originalError = console.error;
+        const originalWarn = console.warn;
+        const output = document.getElementById('testOutput');
+        
+        function addOutput(text, className = '') {
+            const div = document.createElement('div');
+            div.className = className;
+            div.textContent = text;
+            output.appendChild(div);
+            output.scrollTop = output.scrollHeight;
+        }
+        
+        console.log = function(...args) {
+            originalLog.apply(console, args);
+            addOutput(args.join(' '), 'info');
+        };
+        
+        console.error = function(...args) {
+            originalError.apply(console, args);
+            addOutput(args.join(' '), 'error');
+        };
+        
+        console.warn = function(...args) {
+            originalWarn.apply(console, args);
+            addOutput(args.join(' '), 'error');
+        };
+        
+        function clearOutput() {
+            output.innerHTML = '';
+        }
+        
+        // Test results
+        const testResults = {
+            passed: 0,
+            failed: 0,
+            errors: []
+        };
+        
+        function test(name, fn) {
+            try {
+                fn();
+                testResults.passed++;
+                addOutput(`✅ ${name}`, 'success');
+            } catch (error) {
+                testResults.failed++;
+                testResults.errors.push({ name, error: error.message });
+                addOutput(`❌ ${name}: ${error.message}`, 'error');
+            }
+        }
+        
+        function assert(condition, message) {
+            if (!condition) {
+                throw new Error(message || 'Assertion failed');
+            }
+        }
+        
+        function runTests() {
+            clearOutput();
+            testResults.passed = 0;
+            testResults.failed = 0;
+            testResults.errors = [];
+            
+            addOutput('🧪 Starting app.js tests...\n', 'info');
+            
+            // Test 1: Function existence
+            addOutput('\n📋 Testing function existence...\n', 'info');
+            
+            test('checkAuth function exists', () => {
+                assert(typeof checkAuth === 'function', 'checkAuth is not a function');
+            });
+            
+            test('setupEventListeners function exists', () => {
+                assert(typeof setupEventListeners === 'function', 'setupEventListeners is not a function');
+            });
+            
+            test('loadRecentSearches function exists', () => {
+                assert(typeof loadRecentSearches === 'function', 'loadRecentSearches is not a function');
+            });
+            
+            test('addToRecentSearches function exists', () => {
+                assert(typeof addToRecentSearches === 'function', 'addToRecentSearches is not a function');
+            });
+            
+            test('getRecentSearches function exists', () => {
+                assert(typeof getRecentSearches === 'function', 'getRecentSearches is not a function');
+            });
+            
+            test('saveRecentSearches function exists', () => {
+                assert(typeof saveRecentSearches === 'function', 'saveRecentSearches is not a function');
+            });
+            
+            test('removeFromRecentSearches function exists', () => {
+                assert(typeof removeFromRecentSearches === 'function', 'removeFromRecentSearches is not a function');
+            });
+            
+            test('clearAllRecentSearches function exists', () => {
+                assert(typeof clearAllRecentSearches === 'function', 'clearAllRecentSearches is not a function');
+            });
+            
+            test('escapeHtml function exists', () => {
+                assert(typeof escapeHtml === 'function', 'escapeHtml is not a function');
+            });
+            
+            test('formatTime function exists', () => {
+                assert(typeof formatTime === 'function', 'formatTime is not a function');
+            });
+            
+            // Test 2: Recent Searches functionality
+            addOutput('\n📋 Testing Recent Searches functionality...\n', 'info');
+            
+            test('getRecentSearches returns array', () => {
+                const result = getRecentSearches();
+                assert(Array.isArray(result), 'getRecentSearches should return an array');
+            });
+            
+            test('saveRecentSearches saves data', () => {
+                const testData = [{ id: 1, username: 'test', first_name: 'Test', last_name: 'User' }];
+                saveRecentSearches(testData);
+                const retrieved = getRecentSearches();
+                assert(retrieved.length === 1, 'Data should be saved');
+                assert(retrieved[0].id === 1, 'Saved data should match');
+                saveRecentSearches([]);
+            });
+            
+            test('addToRecentSearches adds user', () => {
+                const testUser = {
+                    id: 999,
+                    username: 'testuser',
+                    profile_pic: null,
+                    first_name: 'Test',
+                    last_name: 'User'
+                };
+                addToRecentSearches(testUser);
+                const recent = getRecentSearches();
+                assert(recent.length > 0, 'User should be added');
+                assert(recent[0].id === 999, 'User should be at the beginning');
+                saveRecentSearches([]);
+            });
+            
+            test('addToRecentSearches removes duplicates', () => {
+                const testUser = {
+                    id: 888,
+                    username: 'testuser2',
+                    profile_pic: null,
+                    first_name: 'Test',
+                    last_name: 'User2'
+                };
+                addToRecentSearches(testUser);
+                addToRecentSearches(testUser);
+                const recent = getRecentSearches();
+                const count = recent.filter(u => u.id === 888).length;
+                assert(count === 1, 'Duplicate should be removed');
+                saveRecentSearches([]);
+            });
+            
+            test('addToRecentSearches limits to 10 items', () => {
+                for (let i = 1; i <= 12; i++) {
+                    addToRecentSearches({
+                        id: i,
+                        username: `user${i}`,
+                        profile_pic: null,
+                        first_name: 'Test',
+                        last_name: 'User'
+                    });
+                }
+                const recent = getRecentSearches();
+                assert(recent.length === 10, 'Should limit to 10 items');
+                saveRecentSearches([]);
+            });
+            
+            // Test 3: Utility functions
+            addOutput('\n📋 Testing utility functions...\n', 'info');
+            
+            test('escapeHtml escapes HTML', () => {
+                const result = escapeHtml('<script>alert("xss")</script>');
+                assert(!result.includes('<script>'), 'Should escape HTML tags');
+                assert(result.includes('&lt;'), 'Should escape < character');
+            });
+            
+            test('formatTime formats date string', () => {
+                const dateStr = '2024-01-01T12:00:00Z';
+                const result = formatTime(dateStr);
+                assert(typeof result === 'string', 'Should return string');
+                assert(result.length > 0, 'Should return formatted time');
+            });
+            
+            // Test 4: DOM elements
+            addOutput('\n📋 Testing DOM elements...\n', 'info');
+            
+            test('searchInput element exists', () => {
+                const element = document.getElementById('searchInput');
+                assert(element !== null, 'searchInput element should exist');
+            });
+            
+            test('recentSearches element exists', () => {
+                const element = document.getElementById('recentSearches');
+                assert(element !== null, 'recentSearches element should exist');
+            });
+            
+            test('recentSearchesList element exists', () => {
+                const element = document.getElementById('recentSearchesList');
+                assert(element !== null, 'recentSearchesList element should exist');
+            });
+            
+            // Test 5: loadRecentSearches
+            addOutput('\n📋 Testing loadRecentSearches function...\n', 'info');
+            
+            test('loadRecentSearches handles empty list', () => {
+                saveRecentSearches([]);
+                loadRecentSearches();
+                const recentSearches = document.getElementById('recentSearches');
+                assert(recentSearches.classList.contains('hidden'), 'Should hide when empty');
+            });
+            
+            test('loadRecentSearches displays items', () => {
+                const testUsers = [
+                    { id: 1, username: 'user1', profile_pic: null, first_name: 'User', last_name: 'One' },
+                    { id: 2, username: 'user2', profile_pic: null, first_name: 'User', last_name: 'Two' }
+                ];
+                saveRecentSearches(testUsers);
+                loadRecentSearches();
+                const recentSearches = document.getElementById('recentSearches');
+                const recentSearchesList = document.getElementById('recentSearchesList');
+                assert(!recentSearches.classList.contains('hidden'), 'Should show when has items');
+                assert(recentSearchesList.children.length === 2, 'Should display 2 items');
+                saveRecentSearches([]);
+            });
+            
+            // Summary
+            addOutput('\n' + '='.repeat(50), 'info');
+            addOutput('📊 Test Summary:', 'info');
+            addOutput(`✅ Passed: ${testResults.passed}`, 'success');
+            addOutput(`❌ Failed: ${testResults.failed}`, testResults.failed > 0 ? 'error' : 'success');
+            addOutput('='.repeat(50), 'info');
+            
+            if (testResults.errors.length > 0) {
+                addOutput('\n❌ Errors:', 'error');
+                testResults.errors.forEach(({ name, error }) => {
+                    addOutput(`  - ${name}: ${error}`, 'error');
+                });
+            }
+            
+            if (testResults.failed === 0) {
+                addOutput('\n🎉 All tests passed!', 'success');
+            } else {
+                addOutput(`\n⚠️  ${testResults.failed} test(s) failed`, 'error');
+            }
+        }
+        
+        function testRecentSearches() {
+            clearOutput();
+            addOutput('🧪 Testing Recent Searches functionality...\n', 'info');
+            
+            // Test adding users
+            addOutput('\n1. Testing addToRecentSearches...', 'info');
+            const testUser = {
+                id: 123,
+                username: 'testuser',
+                profile_pic: null,
+                first_name: 'Test',
+                last_name: 'User'
+            };
+            
+            try {
+                addToRecentSearches(testUser);
+                const recent = getRecentSearches();
+                addOutput(`✅ Added user: ${testUser.username}`, 'success');
+                addOutput(`   Current recent searches: ${recent.length}`, 'info');
+                
+                // Test loading
+                addOutput('\n2. Testing loadRecentSearches...', 'info');
+                loadRecentSearches();
+                const recentSearches = document.getElementById('recentSearches');
+                const recentSearchesList = document.getElementById('recentSearchesList');
+                
+                if (!recentSearches.classList.contains('hidden')) {
+                    addOutput(`✅ Recent searches displayed`, 'success');
+                    addOutput(`   Items in list: ${recentSearchesList.children.length}`, 'info');
+                } else {
+                    addOutput(`❌ Recent searches is hidden`, 'error');
+                }
+                
+                // Test removing
+                addOutput('\n3. Testing removeFromRecentSearches...', 'info');
+                removeFromRecentSearches(123);
+                const afterRemove = getRecentSearches();
+                if (afterRemove.length === 0) {
+                    addOutput(`✅ User removed successfully`, 'success');
+                } else {
+                    addOutput(`❌ User not removed`, 'error');
+                }
+                
+            } catch (error) {
+                addOutput(`❌ Error: ${error.message}`, 'error');
+            }
+        }
+    </script>
+</body>
+</html>
+
