@@ -9,11 +9,8 @@ import uvicorn
 import os
 
 from backend.routers import auth, admin, users, messages
-from backend.database import engine, create_tables
+from backend.database import create_tables, init_default_admin
 from backend.config import settings
-from backend.models import User
-from backend.auth import hash_password
-from sqlmodel import Session, select
 
 app = FastAPI(
     title="Chat+Video API",
@@ -69,43 +66,70 @@ async def serve_index():
 @app.on_event("startup")
 async def startup_event():
     """Initialize database on startup and create default admin if not exists"""
-    # Create database tables
-    create_tables()
+    import sys
+    print("🚀 Starting application initialization...", file=sys.stdout, flush=True)
     
-    # Create default admin user if it doesn't exist
     try:
-        with Session(engine) as session:
-            # Check if admin already exists
-            existing_admin = session.exec(
-                select(User).where(User.username == "admin")
-            ).first()
-            
-            if not existing_admin:
-                admin_user = User(
-                    username="admin",
-                    password_hash=hash_password("admin123"),
-                    first_name="System",
-                    last_name="Administrator",
-                    role="admin",
-                    is_active=True
-                )
-                session.add(admin_user)
-                session.commit()
-                print("✅ Default admin user created:")
-                print("   Username: admin")
-                print("   Password: admin123")
-            else:
-                print("✅ Admin user already exists")
+        # Create database tables
+        print("📦 Creating database tables...", file=sys.stdout, flush=True)
+        create_tables()
+        print("✅ Database tables created successfully", file=sys.stdout, flush=True)
+        
+        # Create default admin user if it doesn't exist
+        # Pass ensure_tables=False since we already created them above
+        print("👤 Checking for admin user...", file=sys.stdout, flush=True)
+        result = init_default_admin(ensure_tables=False)
+        
+        if result:
+            print("✅ Admin user created during startup", file=sys.stdout, flush=True)
+        else:
+            print("ℹ️ Admin user check completed", file=sys.stdout, flush=True)
+        
+        print("✅ Startup initialization complete!", file=sys.stdout, flush=True)
+        
     except Exception as e:
-        print(f"⚠️ Error during startup initialization: {e}")
+        error_msg = f"❌ Error during startup initialization: {e}"
+        print(error_msg, file=sys.stderr, flush=True)
         import traceback
         traceback.print_exc()
+        # Don't raise - let the app start even if admin creation fails
+        # Admin can be created manually later via init_db.py or API
 
 
 @app.get("/api/health")
 async def health_check():
     """Health check endpoint"""
     return {"status": "ok", "service": "Chat+Video v1"}
+
+
+@app.post("/api/init-admin")
+async def init_admin_endpoint():
+    """Manual admin initialization endpoint (for testing/debugging)"""
+    try:
+        from backend.database import init_default_admin
+        
+        result = init_default_admin(ensure_tables=True)
+        
+        if result:
+            return {
+                "status": "success",
+                "message": "Admin user created successfully",
+                "username": "admin",
+                "password": "admin123"
+            }
+        else:
+            return {
+                "status": "info",
+                "message": "Admin user already exists or creation skipped"
+            }
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        return {
+            "status": "error",
+            "message": f"Error creating admin: {str(e)}",
+            "details": error_details
+        }
 
 
 if __name__ == "__main__":
