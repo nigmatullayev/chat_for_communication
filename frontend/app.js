@@ -384,12 +384,19 @@ function setupEventListeners() {
     document.getElementById('createUserBtn')?.addEventListener('click', showCreateUserModal);
     document.getElementById('closeCreateUserModal')?.addEventListener('click', hideCreateUserModal);
     document.getElementById('cancelCreateUser')?.addEventListener('click', hideCreateUserModal);
-    document.getElementById('createUserForm')?.addEventListener('submit', createUser);
+    // Note: createUserForm uses onsubmit="handleCreateOrUpdateUser(event)" in HTML
     
     // Admin tabs
     document.querySelectorAll('.tab-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
-            const tab = e.currentTarget.dataset.tab;
+            // Remove active from all tabs
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            // Add active to clicked tab
+            e.currentTarget.classList.add('active');
+            
+            // Determine tab from text content
+            const tabText = e.currentTarget.textContent.trim().toLowerCase();
+            const tab = tabText.includes('users') ? 'users' : 'audit';
             switchAdminTab(tab);
         });
     });
@@ -715,6 +722,12 @@ function switchView(view) {
         container.classList.remove('active');
     });
     
+    // Hide chat view if switching away
+    const chatView = document.getElementById('chatView');
+    if (chatView && view !== 'chat') {
+        chatView.classList.add('hidden');
+    }
+    
     // Show selected view
     if (view === 'chat') {
         const chatListView = document.getElementById('chatListView');
@@ -732,7 +745,7 @@ function switchView(view) {
             // Always load recent searches when switching to search view
             // unless there's text in the input
             if (!searchInput || searchInput.value.trim() === '') {
-            clearSearchResults();
+                clearSearchResults();
                 // Small delay to ensure DOM is ready
                 setTimeout(() => {
                     loadRecentSearches();
@@ -752,12 +765,19 @@ function switchView(view) {
             settingsView.classList.remove('hidden');
             settingsView.classList.add('active');
         }
-    }
-    
-    // Hide chat view if switching away
-    const chatView = document.getElementById('chatView');
-    if (chatView && view !== 'chat') {
-        chatView.classList.add('hidden');
+    } else if (view === 'admin') {
+        const adminView = document.getElementById('adminView');
+        if (adminView) {
+            if (currentUser && currentUser.role === 'admin') {
+                adminView.classList.remove('hidden');
+                adminView.classList.add('active');
+                loadAdminUsers();
+            } else {
+                // If not admin, switch to chat view
+                console.warn('User is not an admin, switching to chat view');
+                switchView('chat');
+            }
+        }
     }
 }
 
@@ -4464,7 +4484,19 @@ async function uploadAvatar(e) {
 
 // Admin functions
 async function loadAdminUsers() {
+    const userList = document.getElementById('adminUserList');
+    const loadingEl = document.getElementById('adminUsersLoading');
+    const emptyEl = document.getElementById('adminUsersEmpty');
+    
+    if (!userList) {
+        console.error('Admin user list element not found');
+        return;
+    }
+    
     try {
+        if (loadingEl) loadingEl.style.display = 'block';
+        if (emptyEl) emptyEl.classList.add('hidden');
+        
         const response = await fetch(`${API_BASE}/admin/users`, {
             headers: { 'Authorization': `Bearer ${accessToken}` }
         });
@@ -4472,42 +4504,90 @@ async function loadAdminUsers() {
         if (response.ok) {
             const users = await response.json();
             
-            const userList = document.getElementById('adminUserList');
             userList.innerHTML = '';
+            
+            if (users.length === 0) {
+                if (emptyEl) emptyEl.classList.remove('hidden');
+                if (loadingEl) loadingEl.style.display = 'none';
+                return;
+            }
             
             users.forEach(user => {
                 const userItem = document.createElement('div');
-                userItem.className = 'user-item';
+                userItem.className = 'admin-user-item';
                 userItem.dataset.userId = user.id;
                 
                 const avatarUrl = user.profile_pic 
                     ? `/uploads/${user.profile_pic}` 
                     : '/static/default-avatar.png';
                 
+                const roleBadge = user.role === 'admin' 
+                    ? '<span class="role-badge admin-badge">Admin</span>' 
+                    : '<span class="role-badge user-badge">User</span>';
+                
+                const statusBadge = user.is_active 
+                    ? '<span class="status-badge active">Active</span>' 
+                    : '<span class="status-badge inactive">Inactive</span>';
+                
                 userItem.innerHTML = `
-                    <div class="user-avatar">
-                        <img src="${avatarUrl}" 
-                             alt="${user.username}" class="avatar-small"
-                             onerror="this.src='/static/default-avatar.png'">
-                        <span class="status-indicator"></span>
+                    <div class="admin-user-info">
+                        <div class="user-avatar">
+                            <img src="${avatarUrl}" 
+                                 alt="${user.username}" class="avatar-small"
+                                 onerror="this.src='/static/default-avatar.png'">
+                        </div>
+                        <div class="user-details">
+                            <div class="user-name-row">
+                                <div class="user-name">${escapeHtml(user.username)}</div>
+                                ${roleBadge}
+                                ${statusBadge}
+                            </div>
+                            <div class="user-meta">
+                                ${user.first_name || user.last_name ? `${escapeHtml(user.first_name || '')} ${escapeHtml(user.last_name || '')}`.trim() : ''}
+                                ${user.first_name || user.last_name ? ' • ' : ''}
+                                ID: ${user.id}
+                            </div>
+                        </div>
                     </div>
-                    <div class="user-details">
-                        <div class="user-name">${user.username}</div>
-                        <div class="last-message">${user.role} ${!user.is_active ? ' (Inactive)' : ''}</div>
+                    <div class="admin-user-actions">
+                        <button class="btn-icon-small" onclick="editUser(${user.id})" title="Edit User">
+                            <i class="fas fa-edit"></i>
+                        </button>
+                        <button class="btn-icon-small" onclick="toggleUserActive(${user.id}, ${user.is_active})" 
+                                title="${user.is_active ? 'Deactivate' : 'Activate'} User">
+                            <i class="fas fa-${user.is_active ? 'ban' : 'check'}"></i>
+                        </button>
+                        <button class="btn-icon-small btn-danger" onclick="deleteUser(${user.id}, '${escapeHtml(user.username)}')" 
+                                title="Delete User" ${user.id === currentUser?.id ? 'disabled' : ''}>
+                            <i class="fas fa-trash"></i>
+                        </button>
                     </div>
                 `;
                 userList.appendChild(userItem);
             });
+            
+            if (loadingEl) loadingEl.style.display = 'none';
+        } else {
+            console.error('Failed to load admin users:', response.status);
+            if (loadingEl) loadingEl.style.display = 'none';
+            showError('Failed to load users');
         }
     } catch (error) {
         console.error('Error loading admin users:', error);
+        if (loadingEl) loadingEl.style.display = 'none';
+        showError('Error loading users: ' + error.message);
     }
 }
 
 async function loadAuditLogs() {
-    if (currentUser.role !== 'admin') return;
+    if (!currentUser || currentUser.role !== 'admin') return;
+    
+    const container = document.getElementById('auditLog');
+    if (!container) return;
     
     try {
+        container.innerHTML = '<div class="loading-message"><i class="fas fa-spinner fa-spin"></i> Loading audit logs...</div>';
+        
         const response = await fetch(`${API_BASE}/admin/audit_logs?limit=100`, {
             headers: { 'Authorization': `Bearer ${accessToken}` }
         });
@@ -4515,26 +4595,44 @@ async function loadAuditLogs() {
         if (response.ok) {
             const logs = await response.json();
             displayAuditLogs(logs);
+        } else {
+            container.innerHTML = '<div class="empty-state">Failed to load audit logs</div>';
         }
     } catch (error) {
         console.error('Error loading audit logs:', error);
+        if (container) {
+            container.innerHTML = '<div class="empty-state">Error loading audit logs</div>';
+        }
     }
 }
 
 function displayAuditLogs(logs) {
     const container = document.getElementById('auditLog');
+    if (!container) return;
+    
     container.innerHTML = '';
+    
+    if (logs.length === 0) {
+        container.innerHTML = '<div class="empty-state"><i class="fas fa-history"></i><p>No audit logs found</p></div>';
+        return;
+    }
     
     logs.forEach(log => {
         const logEl = document.createElement('div');
         logEl.className = 'audit-item';
+        
+        const date = new Date(log.created_at);
+        const dateStr = date.toLocaleDateString();
+        const timeStr = date.toLocaleTimeString();
+        
         logEl.innerHTML = `
             <div class="audit-item-header">
-                <span class="audit-item-type">${log.event_type}</span>
-                <span class="audit-item-time">${formatTime(log.created_at)}</span>
+                <span class="audit-item-type">${escapeHtml(log.event_type)}</span>
+                <span class="audit-item-time">${dateStr} ${timeStr}</span>
             </div>
             <div class="audit-item-body">
-                ${log.new_value || log.old_value || 'N/A'}
+                ${escapeHtml(log.new_value || log.old_value || 'N/A')}
+                ${log.user_id ? `<div style="margin-top: 4px; font-size: 11px; color: var(--text-muted);">User ID: ${log.user_id}</div>` : ''}
             </div>
         `;
         container.appendChild(logEl);
@@ -4542,55 +4640,202 @@ function displayAuditLogs(logs) {
 }
 
 function switchAdminTab(tab) {
-    document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
-    event.currentTarget.classList.add('active');
+    // Show/hide tab content
+    const usersTab = document.getElementById('adminUsersTab');
+    const auditTab = document.getElementById('adminAuditTab');
     
-    document.getElementById('adminUsersTab').classList.toggle('hidden', tab !== 'users');
-    document.getElementById('adminAuditTab').classList.toggle('hidden', tab !== 'audit');
+    if (usersTab) {
+        usersTab.classList.toggle('hidden', tab !== 'users');
+    }
+    if (auditTab) {
+        auditTab.classList.toggle('hidden', tab !== 'audit');
+    }
     
-    if (tab === 'audit') {
+    // Load data for active tab
+    if (tab === 'users') {
+        loadAdminUsers();
+    } else if (tab === 'audit') {
         loadAuditLogs();
     }
 }
 
 function showCreateUserModal() {
+    // Reset form
+    document.getElementById('createUserForm').reset();
+    document.getElementById('editUserId').value = '';
+    document.getElementById('createUserModalTitle').textContent = 'Create New User';
+    document.getElementById('createUserSubmitBtn').textContent = 'Create User';
+    document.getElementById('createPassword').required = true;
+    const passwordLabel = document.getElementById('passwordGroup').querySelector('label');
+    if (passwordLabel) {
+        passwordLabel.textContent = 'Password *';
+    }
+    document.getElementById('createUserMessage').textContent = '';
+    document.getElementById('createUserMessage').className = 'message';
+    
+    // Show modal
     document.getElementById('createUserModal').classList.remove('hidden');
 }
 
 function hideCreateUserModal() {
     document.getElementById('createUserModal').classList.add('hidden');
+    // Reset form
+    document.getElementById('createUserForm').reset();
+    document.getElementById('editUserId').value = '';
 }
 
-async function createUser(e) {
-    e.preventDefault();
+async function handleCreateOrUpdateUser(e) {
+    if (e) e.preventDefault();
+    
+    const editUserId = document.getElementById('editUserId').value;
+    const username = document.getElementById('createUsername').value;
+    const password = document.getElementById('createPassword').value;
+    const first_name = document.getElementById('createFirstName').value;
+    const last_name = document.getElementById('createLastName').value;
+    const role = document.getElementById('createRole').value;
+    
+    if (!username) {
+        showError('createUserMessage', 'Username is required');
+        return;
+    }
+    
+    // For new users, password is required
+    if (!editUserId && !password) {
+        showError('createUserMessage', 'Password is required for new users');
+        return;
+    }
+    
     const formData = {
-        username: document.getElementById('createUsername').value,
-        password: document.getElementById('createPassword').value,
-        first_name: document.getElementById('createFirstName').value,
-        last_name: document.getElementById('createLastName').value,
-        role: document.getElementById('createRole').value
+        username: username,
+        first_name: first_name || null,
+        last_name: last_name || null,
+        role: role || 'user'
     };
     
+    // Only include password if provided and not empty
+    // For new users, password is already validated above
+    // For updates, if password is provided, include it; otherwise, don't send it
+    if (password && password.trim() !== '') {
+        formData.password = password;
+    } else if (!editUserId) {
+        // For new users, password is required (already validated)
+        formData.password = password;
+    }
+    
     try {
-        const response = await fetch(`${API_BASE}/admin/users`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${accessToken}`
-            },
-            body: JSON.stringify(formData)
-        });
+        let response;
+        if (editUserId) {
+            // Update existing user
+            response = await fetch(`${API_BASE}/admin/users/${editUserId}`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${accessToken}`
+                },
+                body: JSON.stringify(formData)
+            });
+        } else {
+            // Create new user
+            response = await fetch(`${API_BASE}/admin/users`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${accessToken}`
+                },
+                body: JSON.stringify(formData)
+            });
+        }
         
         if (response.ok) {
             hideCreateUserModal();
             loadAdminUsers();
-            showSuccess('User created successfully');
+            showSuccess(editUserId ? 'User updated successfully' : 'User created successfully');
         } else {
             const data = await response.json();
-            showError(data.detail || 'Failed to create user');
+            showError('createUserMessage', data.detail || `Failed to ${editUserId ? 'update' : 'create'} user`);
         }
     } catch (error) {
-        console.error('Error creating user:', error);
+        console.error(`Error ${editUserId ? 'updating' : 'creating'} user:`, error);
+        showError('createUserMessage', `Failed to ${editUserId ? 'update' : 'create'} user. Please try again.`);
+    }
+}
+
+async function editUser(userId) {
+    try {
+        const response = await fetch(`${API_BASE}/admin/users/${userId}`, {
+            headers: { 'Authorization': `Bearer ${accessToken}` }
+        });
+        
+        if (response.ok) {
+            const user = await response.json();
+            
+            // Fill form with user data
+            document.getElementById('editUserId').value = user.id;
+            document.getElementById('createUsername').value = user.username;
+            document.getElementById('createPassword').value = '';
+            document.getElementById('createPassword').required = false;
+            document.getElementById('createFirstName').value = user.first_name || '';
+            document.getElementById('createLastName').value = user.last_name || '';
+            document.getElementById('createRole').value = user.role;
+            
+            // Update modal title and button
+            document.getElementById('createUserModalTitle').textContent = 'Edit User';
+            document.getElementById('createUserSubmitBtn').textContent = 'Update User';
+            document.getElementById('passwordGroup').querySelector('label').textContent = 'Password (leave empty to keep current)';
+            
+            // Show modal
+            showCreateUserModal();
+        } else {
+            showError('Failed to load user data');
+        }
+    } catch (error) {
+        console.error('Error loading user for edit:', error);
+        showError('Error loading user data');
+    }
+}
+
+async function deleteUser(userId, username) {
+    if (!confirm(`Are you sure you want to delete user "${username}"? This action cannot be undone.`)) {
+        return;
+    }
+    
+    try {
+        const response = await fetch(`${API_BASE}/admin/users/${userId}`, {
+            method: 'DELETE',
+            headers: { 'Authorization': `Bearer ${accessToken}` }
+        });
+        
+        if (response.ok) {
+            loadAdminUsers();
+            showSuccess('User deleted successfully');
+        } else {
+            const data = await response.json();
+            showError(data.detail || 'Failed to delete user');
+        }
+    } catch (error) {
+        console.error('Error deleting user:', error);
+        showError('Failed to delete user. Please try again.');
+    }
+}
+
+async function toggleUserActive(userId, currentStatus) {
+    try {
+        const response = await fetch(`${API_BASE}/admin/users/${userId}/toggle-active`, {
+            method: 'PATCH',
+            headers: { 'Authorization': `Bearer ${accessToken}` }
+        });
+        
+        if (response.ok) {
+            const data = await response.json();
+            loadAdminUsers();
+            showSuccess(data.message || `User ${data.is_active ? 'activated' : 'deactivated'} successfully`);
+        } else {
+            const data = await response.json();
+            showError(data.detail || 'Failed to toggle user status');
+        }
+    } catch (error) {
+        console.error('Error toggling user status:', error);
+        showError('Failed to toggle user status. Please try again.');
     }
 }
 

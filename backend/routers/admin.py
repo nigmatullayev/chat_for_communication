@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 from backend.database import get_session
 from backend.models import User, AuditLog
-from backend.schemas import AdminUserCreate, UserResponse, AuditLogResponse
+from backend.schemas import AdminUserCreate, AdminUserUpdate, UserResponse, AuditLogResponse
 from backend.auth import get_current_admin_user, hash_password, get_client_ip
 from backend.audit import log_event
 
@@ -86,7 +86,7 @@ async def get_user(
 @router.put("/users/{user_id}", response_model=UserResponse)
 async def update_user(
     user_id: int,
-    user_update: AdminUserCreate,
+    user_update: AdminUserUpdate,
     request: Request,
     admin: User = Depends(get_current_admin_user),
     session: Session = Depends(get_session)
@@ -99,8 +99,9 @@ async def update_user(
             detail="User not found"
         )
     
-    # Check username uniqueness
-    if user_update.username != user.username:
+    # Update username if provided
+    if user_update.username is not None and user_update.username != user.username:
+        # Check username uniqueness
         existing = session.exec(
             select(User).where(User.username == user_update.username)
         ).first()
@@ -109,13 +110,20 @@ async def update_user(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Username already taken"
             )
+        user.username = user_update.username
     
-    # Update user
-    user.username = user_update.username
-    user.password_hash = hash_password(user_update.password)
-    user.first_name = user_update.first_name
-    user.last_name = user_update.last_name
-    user.role = user_update.role
+    # Update password only if provided
+    if user_update.password is not None and user_update.password != '':
+        user.password_hash = hash_password(user_update.password)
+    
+    # Update other fields if provided
+    if user_update.first_name is not None:
+        user.first_name = user_update.first_name
+    if user_update.last_name is not None:
+        user.last_name = user_update.last_name
+    if user_update.role is not None:
+        user.role = user_update.role
+    
     user.updated_at = datetime.now(timezone.utc)
     session.add(user)
     session.commit()

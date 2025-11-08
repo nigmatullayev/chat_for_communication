@@ -117,6 +117,14 @@ class AdminUserCreate(UserCreate):
     role: str = "user"
 
 
+class AdminUserUpdate(BaseModel):
+    username: Optional[str] = None
+    password: Optional[str] = None
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    role: Optional[str] = None
+
+
 class AuditLogResponse(BaseModel):
     id: int
     user_id: Optional[int] = None
