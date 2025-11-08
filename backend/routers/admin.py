@@ -4,7 +4,7 @@ Admin endpoints
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlmodel import Session, select
-from datetime import datetime
+from datetime import datetime, timezone
 
 from backend.database import get_session
 from backend.models import User, AuditLog
@@ -116,7 +116,7 @@ async def update_user(
     user.first_name = user_update.first_name
     user.last_name = user_update.last_name
     user.role = user_update.role
-    user.updated_at = datetime.utcnow()
+    user.updated_at = datetime.now(timezone.utc)
     session.add(user)
     session.commit()
     session.refresh(user)
@@ -190,7 +190,7 @@ async def toggle_user_active(
         )
     
     user.is_active = not user.is_active
-    user.updated_at = datetime.utcnow()
+    user.updated_at = datetime.now(timezone.utc)
     session.add(user)
     session.commit()
     session.refresh(user)

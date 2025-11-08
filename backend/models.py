@@ -1,7 +1,7 @@
 """
 Database models using SQLModel
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from sqlmodel import SQLModel, Field, Relationship
 
@@ -19,8 +19,8 @@ class User(SQLModel, table=True):
     bio: Optional[str] = None
     role: str = Field(default="user")  # 'user' or 'admin'
     is_active: bool = Field(default=True)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     
     # Relationships
     sent_messages: list["Message"] = Relationship(back_populates="sender", sa_relationship_kwargs={"foreign_keys": "Message.sender_id"})
@@ -43,7 +43,7 @@ class Message(SQLModel, table=True):
     is_read: bool = Field(default=False)
     is_deleted: bool = Field(default=False)
     edited_at: Optional[datetime] = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     
     # Relationships
     sender: User = Relationship(back_populates="sent_messages", sa_relationship_kwargs={"foreign_keys": "Message.sender_id"})
@@ -59,7 +59,7 @@ class MessageReaction(SQLModel, table=True):
     message_id: int = Field(foreign_key="messages.id")
     user_id: int = Field(foreign_key="users.id")
     reaction_type: str  # like, love, laugh, wow, sad, angry, etc.
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     
     # Relationships
     message: Message = Relationship(back_populates="reactions")
@@ -77,7 +77,7 @@ class AuditLog(SQLModel, table=True):
     old_value: Optional[str] = None
     new_value: Optional[str] = None
     ip: Optional[str] = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class RefreshToken(SQLModel, table=True):
@@ -89,7 +89,7 @@ class RefreshToken(SQLModel, table=True):
     token: str = Field(unique=True)
     revoked: bool = Field(default=False)
     expires_at: datetime
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class Follow(SQLModel, table=True):
@@ -99,7 +99,7 @@ class Follow(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     follower_id: int = Field(foreign_key="users.id")
     following_id: int = Field(foreign_key="users.id")
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     
     # Relationships
     follower: User = Relationship(sa_relationship_kwargs={"foreign_keys": "Follow.follower_id"})

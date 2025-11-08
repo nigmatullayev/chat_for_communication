@@ -2,7 +2,7 @@
 Messages and WebSocket endpoints
 """
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, Query, HTTPException, status, UploadFile, File
 from sqlmodel import Session, select
 
@@ -232,7 +232,7 @@ async def update_message(
     
     if message_update.content is not None:
         message.content = message_update.content
-        message.edited_at = datetime.utcnow()
+        message.edited_at = datetime.now(timezone.utc)
     
     session.add(message)
     session.commit()

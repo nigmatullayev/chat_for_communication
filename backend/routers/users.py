@@ -2,7 +2,7 @@
 User profile endpoints
 """
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Request, Query
 from sqlmodel import Session, select, or_, and_
@@ -102,7 +102,7 @@ async def update_profile(
         current_user.profile_pic = user_update.profile_pic
         changes.append("Profile picture updated")
     
-    current_user.updated_at = datetime.utcnow()
+    current_user.updated_at = datetime.now(timezone.utc)
     session.add(current_user)
     session.commit()
     session.refresh(current_user)
@@ -224,7 +224,7 @@ async def change_password(
     
     # Update password
     current_user.password_hash = hash_password(new_password)
-    current_user.updated_at = datetime.utcnow()
+    current_user.updated_at = datetime.now(timezone.utc)
     session.add(current_user)
     session.commit()
     
@@ -287,7 +287,7 @@ async def upload_avatar(
         # If image processing fails, use original
         current_user.profile_pic = filename
     
-    current_user.updated_at = datetime.utcnow()
+    current_user.updated_at = datetime.now(timezone.utc)
     session.add(current_user)
     session.commit()
     session.refresh(current_user)

@@ -2,7 +2,7 @@
 WebSocket connection manager
 """
 from typing import Dict
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi import WebSocket, WebSocketDisconnect
 from sqlmodel import Session, select
 
@@ -411,7 +411,7 @@ class ConnectionManager:
             
             # Update message
             message.content = new_content
-            message.edited_at = datetime.utcnow()
+            message.edited_at = datetime.now(timezone.utc)
             session.add(message)
             session.commit()
             session.refresh(message)
