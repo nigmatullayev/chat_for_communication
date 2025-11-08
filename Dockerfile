@@ -24,5 +24,7 @@ RUN mkdir -p uploads
 EXPOSE 8000
 
 # Run the application
-CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Render will set PORT environment variable
+# Using shell form to allow environment variable substitution
+CMD uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000}
 

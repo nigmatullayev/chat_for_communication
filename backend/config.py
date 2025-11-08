@@ -10,6 +10,10 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     """Application settings"""
     
+    # Server
+    port: int = 8000
+    host: str = "0.0.0.0"
+    
     # Database
     database_url: str = "sqlite:///./chat_video.db"
     
@@ -33,7 +37,12 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = 5
     
     # CORS
-    cors_origins: list = ["http://localhost:3000", "http://127.0.0.1:3000"]
+    cors_origins: list = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+    ]
     
     class Config:
         env_file = ".env"
