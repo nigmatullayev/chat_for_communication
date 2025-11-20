@@ -262,6 +262,48 @@ async def delete_message(
     return {"message": "Message deleted successfully"}
 
 
+@router.delete("/conversations/{user_id}")
+async def delete_conversation(
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session)
+):
+    """Delete all messages in a conversation (soft delete - only sender's messages)"""
+    # Verify the other user exists
+    other_user = session.get(User, user_id)
+    if not other_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Get all messages in the conversation where current user is sender
+    from sqlmodel import or_, and_
+    messages = session.exec(
+        select(Message).where(
+            and_(
+                or_(
+                    and_(Message.sender_id == current_user.id, Message.receiver_id == user_id),
+                    and_(Message.sender_id == user_id, Message.receiver_id == current_user.id)
+                ),
+                Message.is_deleted == False
+            )
+        )
+    ).all()
+    
+    # Soft delete only messages where current user is the sender
+    deleted_count = 0
+    for message in messages:
+        if message.sender_id == current_user.id:
+            message.is_deleted = True
+            session.add(message)
+            deleted_count += 1
+    
+    session.commit()
+    
+    return {
+        "message": "Conversation deleted successfully",
+        "deleted_count": deleted_count
+    }
+
+
 @router.post("/{message_id}/reactions", response_model=MessageReactionResponse)
 async def add_reaction(
     message_id: int,

@@ -80,9 +80,236 @@
             <div id="chatListView" class="view-container active">
                 <div class="view-header">
                     <h1>Messages</h1>
+                    <button id="createGroupBtn" class="btn-primary btn-sm" onclick="showCreateGroupModal()" title="Create Group">
+                        <i class="fas fa-users"></i> Create Group
+                    </button>
                 </div>
-                <div class="conversations-list" id="conversationsList">
-                    <!-- Conversations will be loaded here -->
+                <div class="chat-tabs">
+                    <button class="chat-tab-btn active" onclick="switchChatTab('conversations')" id="conversationsTab">
+                        <i class="fas fa-comments"></i> Conversations
+                    </button>
+                    <button class="chat-tab-btn" onclick="switchChatTab('groups')" id="groupsTab">
+                        <i class="fas fa-users"></i> Groups
+                    </button>
+                </div>
+                <div id="conversationsTabContent" class="chat-tab-content">
+                    <div class="conversations-list" id="conversationsList">
+                        <!-- Conversations will be loaded here -->
+                    </div>
+                </div>
+                <div id="groupsTabContent" class="chat-tab-content hidden">
+                    <div class="groups-list" id="groupsList">
+                        <!-- Groups will be loaded here -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Group Chat View -->
+            <div id="groupChatView" class="view-container hidden">
+                <div class="chat-header">
+                    <button class="btn-back" id="backFromGroupChat">
+                        <i class="fas fa-arrow-left"></i>
+                    </button>
+                    <div class="chat-user-info" onclick="showGroupInfo()" style="cursor: pointer;">
+                        <img id="groupChatAvatarImg" src="/static/default-avatar.png" alt="Group" class="avatar-small" style="width: 40px; height: 40px; border-radius: 50%; object-fit: cover; display: none;">
+                        <div class="group-avatar" id="groupChatAvatar" style="width: 40px; height: 40px; font-size: 18px;">G</div>
+                        <div>
+                            <div id="groupChatName"></div>
+                            <div class="status-text" id="groupChatMemberCount">
+                                <i class="fas fa-users"></i> 0 members
+                            </div>
+                        </div>
+                    </div>
+                    <div class="chat-actions">
+                        <button id="groupMembersBtn" class="btn-icon" title="Group Members" onclick="showGroupMembers()">
+                            <i class="fas fa-users"></i>
+                        </button>
+                        <button id="groupCallBtn" class="btn-icon" title="Group Video Call" onclick="startGroupCall('video')">
+                            <i class="fas fa-video"></i>
+                        </button>
+                        <button id="groupVoiceBtn" class="btn-icon" title="Group Voice Call" onclick="startGroupCall('audio')">
+                            <i class="fas fa-phone"></i>
+                        </button>
+                        <button id="groupMenuBtn" class="btn-icon" title="Group Menu" onclick="showGroupMenu()">
+                            <i class="fas fa-ellipsis-v"></i>
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- Group Menu Dropdown -->
+                <div id="groupMenuDropdown" class="dropdown-menu hidden">
+                    <button class="dropdown-item" onclick="showEditGroupModal()" id="editGroupBtn">
+                        <i class="fas fa-edit"></i> Edit Group
+                    </button>
+                    <button class="dropdown-item" onclick="showUploadGroupAvatarModal()" id="uploadGroupAvatarBtn">
+                        <i class="fas fa-image"></i> Change Avatar
+                    </button>
+                    <button class="dropdown-item" onclick="showDeleteGroupConfirm()" id="deleteGroupBtn" style="color: #dc3545;">
+                        <i class="fas fa-trash"></i> Delete Group
+                    </button>
+                    <button class="dropdown-item" onclick="leaveGroup()" id="leaveGroupBtn" style="color: #dc3545;">
+                        <i class="fas fa-sign-out-alt"></i> Leave Group
+                    </button>
+                </div>
+
+                <div class="chat-messages" id="groupChatMessages">
+                    <!-- Group messages will be displayed here -->
+                </div>
+
+                <div class="chat-input-container">
+                    <div id="groupTypingIndicator" class="typing-indicator hidden">
+                        <i class="fas fa-circle"></i>
+                        <span id="groupTypingUser"></span> is typing...
+                    </div>
+                    <div class="media-preview hidden" id="groupMediaPreview">
+                        <div class="media-preview-item">
+                            <img id="groupPreviewImage" src="" alt="Preview" class="hidden">
+                            <video id="groupPreviewVideo" src="" controls class="hidden"></video>
+                            <button class="btn-remove-media" id="removeGroupMediaBtn">
+                                <i class="fas fa-times"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="chat-input-wrapper">
+                        <div class="input-actions">
+                            <button id="groupAttachImageBtn" class="btn-attach" title="Send Image">
+                                <i class="fas fa-image"></i>
+                            </button>
+                            <button id="groupAttachVideoBtn" class="btn-attach" title="Send Video">
+                                <i class="fas fa-video"></i>
+                            </button>
+                            <button id="groupAttachLocationBtn" class="btn-attach" title="Send Location">
+                                <i class="fas fa-map-marker-alt"></i>
+                            </button>
+                        </div>
+                        <textarea id="groupMessageInput" placeholder="Type a message..." rows="1"></textarea>
+                        <button id="groupSendBtn" class="btn-send" title="Send">
+                            <i class="fas fa-paper-plane"></i>
+                        </button>
+                    </div>
+                    <input type="file" id="groupImageInput" accept="image/*" class="hidden">
+                    <input type="file" id="groupVideoInput" accept="video/*" class="hidden">
+                </div>
+
+                <!-- Group Message Context Menu -->
+                <div id="groupMessageContextMenu" class="context-menu hidden">
+                    <button class="context-menu-item" id="editGroupMessageBtn">
+                        <i class="fas fa-edit"></i> Edit
+                    </button>
+                    <button class="context-menu-item" id="deleteGroupMessageBtn">
+                        <i class="fas fa-trash"></i> Delete
+                    </button>
+                    <button class="context-menu-item" id="reactGroupMessageBtn">
+                        <i class="fas fa-smile"></i> React
+                    </button>
+                </div>
+
+                <!-- Reaction Picker for Group -->
+                <div id="groupReactionPicker" class="reaction-picker hidden">
+                    <button class="reaction-btn" data-reaction="like">👍</button>
+                    <button class="reaction-btn" data-reaction="love">❤️</button>
+                    <button class="reaction-btn" data-reaction="laugh">😂</button>
+                    <button class="reaction-btn" data-reaction="wow">😮</button>
+                    <button class="reaction-btn" data-reaction="sad">😢</button>
+                    <button class="reaction-btn" data-reaction="angry">😠</button>
+                </div>
+            </div>
+
+            <!-- Group Members Modal -->
+            <div id="groupMembersModal" class="modal hidden">
+                <div class="modal-content" style="max-width: 500px;">
+                    <div class="modal-header">
+                        <h2 id="groupMembersModalTitle">Group Members</h2>
+                        <button class="btn-icon" onclick="hideGroupMembersModal()">
+                            <i class="fas fa-times"></i>
+                        </button>
+                    </div>
+                    <div class="modal-body">
+                        <div id="groupMembersList" class="followers-list">
+                            <!-- Group members will be loaded here -->
+                        </div>
+                        <div id="addMemberBtnContainer" class="modal-actions" style="margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border-color);">
+                            <button class="btn-primary" onclick="showAddGroupMemberModal()">
+                                <i class="fas fa-user-plus"></i> Add Member
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Add Group Member Modal -->
+            <div id="addGroupMemberModal" class="modal hidden">
+                <div class="modal-content" style="max-width: 500px;">
+                    <div class="modal-header">
+                        <h2>Add Member to Group</h2>
+                        <button class="btn-icon" onclick="hideAddGroupMemberModal()">
+                            <i class="fas fa-times"></i>
+                        </button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="form-group">
+                            <label>Search Users</label>
+                            <input type="text" id="addMemberSearchInput" placeholder="Search users..." 
+                                   oninput="searchUsersToAddToGroup(this.value)">
+                            <div id="addMemberSearchResults" class="member-search-results hidden"></div>
+                        </div>
+                        <div id="addGroupMemberMessage" class="message"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Edit Group Modal -->
+            <div id="editGroupModal" class="modal hidden">
+                <div class="modal-content" style="max-width: 600px;">
+                    <div class="modal-header">
+                        <h2>Edit Group</h2>
+                        <button class="btn-icon" onclick="hideEditGroupModal()">
+                            <i class="fas fa-times"></i>
+                        </button>
+                    </div>
+                    <div class="modal-body">
+                        <form id="editGroupForm" onsubmit="handleUpdateGroup(event)">
+                            <div class="form-group">
+                                <label>Group Name *</label>
+                                <input type="text" id="editGroupName" required placeholder="Enter group name">
+                            </div>
+                            <div class="form-group">
+                                <label>Description</label>
+                                <textarea id="editGroupDescription" rows="3" placeholder="Enter group description (optional)"></textarea>
+                            </div>
+                            <div class="form-actions">
+                                <button type="button" class="btn-secondary" onclick="hideEditGroupModal()">Cancel</button>
+                                <button type="submit" class="btn-primary">Save Changes</button>
+                            </div>
+                            <div id="editGroupMessage" class="message"></div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Upload Group Avatar Modal -->
+            <div id="uploadGroupAvatarModal" class="modal hidden">
+                <div class="modal-content" style="max-width: 500px;">
+                    <div class="modal-header">
+                        <h2>Change Group Avatar</h2>
+                        <button class="btn-icon" onclick="hideUploadGroupAvatarModal()">
+                            <i class="fas fa-times"></i>
+                        </button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="form-group">
+                            <label>Select Image</label>
+                            <input type="file" id="groupAvatarInput" accept="image/*" onchange="handleGroupAvatarSelect(event)">
+                            <div id="groupAvatarPreview" class="avatar-preview" style="margin-top: 16px; text-align: center;">
+                                <img id="groupAvatarPreviewImg" src="" alt="Preview" style="max-width: 200px; max-height: 200px; border-radius: 8px; display: none;">
+                            </div>
+                        </div>
+                        <div class="form-actions">
+                            <button type="button" class="btn-secondary" onclick="hideUploadGroupAvatarModal()">Cancel</button>
+                            <button type="button" class="btn-primary" onclick="uploadGroupAvatar()" id="uploadGroupAvatarSubmitBtn">Upload Avatar</button>
+                        </div>
+                        <div id="uploadGroupAvatarMessage" class="message"></div>
+                    </div>
                 </div>
             </div>
 
@@ -121,9 +348,14 @@
             <div id="profileView" class="view-container hidden">
                 <div class="profile-header">
                     <h1>Profile</h1>
-                    <button id="editProfileBtn" class="btn-icon">
-                        <i class="fas fa-edit"></i>
-                    </button>
+                    <div class="profile-header-actions">
+                        <button id="settingsBtn" class="btn-icon" data-view="settings" title="Settings">
+                            <i class="fas fa-cog"></i>
+                        </button>
+                        <button id="adminNavMobile" class="btn-icon hidden" data-view="admin" title="Admin Panel">
+                            <i class="fas fa-shield-alt"></i>
+                        </button>
+                    </div>
                 </div>
                 <div class="profile-content">
                     <div class="profile-avatar-section">
@@ -137,6 +369,16 @@
                         <div id="profileUsername" class="profile-username"></div>
                         <div id="profileName" class="profile-name"></div>
                         <div id="profileBio" class="profile-bio"></div>
+                    </div>
+                    <div class="profile-stats">
+                        <div class="profile-stat-item" onclick="showFollowers()">
+                            <span id="followersCount" class="stat-count">0</span>
+                            <span class="stat-label">Followers</span>
+                        </div>
+                        <div class="profile-stat-item" onclick="showFollowing()">
+                            <span id="followingCount" class="stat-count">0</span>
+                            <span class="stat-label">Following</span>
+                        </div>
                     </div>
                     <div class="profile-actions">
                         <button id="editProfileActionBtn" class="btn-primary-outline">
@@ -173,6 +415,63 @@
                 </div>
             </div>
 
+            <!-- Followers/Following Modal -->
+            <div id="followersModal" class="modal hidden">
+                <div class="modal-content" style="max-width: 500px;">
+                    <div class="modal-header">
+                        <h2 id="followersModalTitle">Followers</h2>
+                        <button class="btn-icon" onclick="hideFollowersModal()">
+                            <i class="fas fa-times"></i>
+                        </button>
+                    </div>
+                    <div class="modal-body">
+                        <div id="followersList" class="followers-list">
+                            <!-- Followers/Following will be loaded here -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Create Group Modal -->
+            <div id="createGroupModal" class="modal hidden">
+                <div class="modal-content" style="max-width: 600px;">
+                    <div class="modal-header">
+                        <h2>Create New Group</h2>
+                        <button class="btn-icon" onclick="hideCreateGroupModal()">
+                            <i class="fas fa-times"></i>
+                        </button>
+                    </div>
+                    <div class="modal-body">
+                        <form id="createGroupForm" onsubmit="handleCreateGroup(event)">
+                            <div class="form-group">
+                                <label>Group Name *</label>
+                                <input type="text" id="groupName" required placeholder="Enter group name">
+                            </div>
+                            <div class="form-group">
+                                <label>Description</label>
+                                <textarea id="groupDescription" rows="3" placeholder="Enter group description (optional)"></textarea>
+                            </div>
+                            <div class="form-group">
+                                <label>Add Members</label>
+                                <div class="member-search-container">
+                                    <input type="text" id="memberSearchInput" placeholder="Search users to add..." 
+                                           oninput="searchUsersForGroup(this.value)">
+                                    <div id="memberSearchResults" class="member-search-results hidden"></div>
+                                </div>
+                                <div id="selectedMembers" class="selected-members">
+                                    <!-- Selected members will be shown here -->
+                                </div>
+                            </div>
+                            <div class="form-actions">
+                                <button type="button" class="btn-secondary" onclick="hideCreateGroupModal()">Cancel</button>
+                                <button type="submit" class="btn-primary">Create Group</button>
+                            </div>
+                            <div id="createGroupMessage" class="message"></div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+
             <!-- Settings View -->
             <div id="settingsView" class="view-container hidden">
                 <div class="view-header">
@@ -202,6 +501,14 @@
                             <label>Enable Web Notifications</label>
                             <button id="enableNotificationsBtn" class="btn-toggle">
                                 <span class="toggle-slider"></span>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="settings-section">
+                        <h2>Account</h2>
+                        <div class="settings-account-actions">
+                            <button id="settingsLogoutBtn" class="btn-danger-outline" style="width: 100%;">
+                                <i class="fas fa-sign-out-alt"></i> Logout
                             </button>
                         </div>
                     </div>
@@ -529,6 +836,10 @@
             <button class="nav-item" data-view="profile">
                 <img id="navProfileImg" src="/static/default-avatar.png" alt="Profile" class="nav-profile-img">
                 <span>Profile</span>
+            </button>
+            <button id="adminNavMobileBottom" class="nav-item hidden" data-view="admin">
+                <i class="fas fa-shield-alt"></i>
+                <span>Admin</span>
             </button>
         </div>
     </div>

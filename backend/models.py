@@ -105,3 +105,73 @@ class Follow(SQLModel, table=True):
     follower: User = Relationship(sa_relationship_kwargs={"foreign_keys": "Follow.follower_id"})
     following: User = Relationship(sa_relationship_kwargs={"foreign_keys": "Follow.following_id"})
 
+
+class Group(SQLModel, table=True):
+    """Group/Channel model for group chats"""
+    __tablename__ = "groups"
+    
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str
+    description: Optional[str] = None
+    avatar: Optional[str] = None
+    created_by: int = Field(foreign_key="users.id")
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    
+    # Relationships
+    creator: User = Relationship()
+    members: list["GroupMember"] = Relationship(back_populates="group")
+    messages: list["GroupMessage"] = Relationship(back_populates="group")
+
+
+class GroupMember(SQLModel, table=True):
+    """Group member model"""
+    __tablename__ = "group_members"
+    
+    id: Optional[int] = Field(default=None, primary_key=True)
+    group_id: int = Field(foreign_key="groups.id")
+    user_id: int = Field(foreign_key="users.id")
+    role: str = Field(default="member")  # member, admin
+    joined_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    
+    # Relationships
+    group: Group = Relationship(back_populates="members")
+    user: User = Relationship()
+
+
+class GroupMessage(SQLModel, table=True):
+    """Group message model"""
+    __tablename__ = "group_messages"
+    
+    id: Optional[int] = Field(default=None, primary_key=True)
+    group_id: int = Field(foreign_key="groups.id")
+    sender_id: int = Field(foreign_key="users.id")
+    content: Optional[str] = None
+    attachment: Optional[str] = None
+    message_type: str = Field(default="text")  # text, image, video, location, circular_video
+    location_lat: Optional[float] = None
+    location_lng: Optional[float] = None
+    is_deleted: bool = Field(default=False)
+    edited_at: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    
+    # Relationships
+    group: Group = Relationship(back_populates="messages")
+    sender: User = Relationship()
+    reactions: list["GroupMessageReaction"] = Relationship(back_populates="message")
+
+
+class GroupMessageReaction(SQLModel, table=True):
+    """Group message reaction model"""
+    __tablename__ = "group_message_reactions"
+    
+    id: Optional[int] = Field(default=None, primary_key=True)
+    message_id: int = Field(foreign_key="group_messages.id")
+    user_id: int = Field(foreign_key="users.id")
+    reaction_type: str  # like, love, laugh, wow, sad, angry, etc.
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    
+    # Relationships
+    message: GroupMessage = Relationship(back_populates="reactions")
+    user: User = Relationship()
+

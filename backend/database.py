@@ -4,7 +4,7 @@ Database configuration and initialization
 from sqlmodel import SQLModel, create_engine, Session, select
 from backend.config import settings
 # Import all models to ensure they're registered
-from backend.models import User, Message, MessageReaction, AuditLog, RefreshToken, Follow
+from backend.models import User, Message, MessageReaction, AuditLog, RefreshToken, Follow, Group, GroupMember, GroupMessage, GroupMessageReaction
 
 engine = create_engine(
     settings.database_url,

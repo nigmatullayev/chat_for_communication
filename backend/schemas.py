@@ -146,3 +146,91 @@ class WebSocketMessage(BaseModel):
     content: Optional[str] = None
     data: Optional[dict] = None
 
+
+# Group schemas
+class GroupCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    member_ids: list[int] = []  # List of user IDs to add to the group
+
+
+class GroupUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+
+
+class GroupResponse(BaseModel):
+    id: int
+    name: str
+    description: Optional[str] = None
+    avatar: Optional[str] = None
+    created_by: int
+    created_at: datetime
+    updated_at: datetime
+    member_count: Optional[int] = None
+    is_owner: Optional[bool] = None
+    is_admin: Optional[bool] = None
+    user_role: Optional[str] = None
+    
+    class Config:
+        from_attributes = True
+
+
+class GroupMemberResponse(BaseModel):
+    id: int
+    group_id: int
+    user_id: int
+    role: str
+    joined_at: datetime
+    user: UserPublic
+    
+    class Config:
+        from_attributes = True
+
+
+class GroupMessageCreate(BaseModel):
+    content: Optional[str] = None
+    attachment: Optional[str] = None
+    message_type: str = "text"
+    location_lat: Optional[float] = None
+    location_lng: Optional[float] = None
+
+
+class GroupMessageUpdate(BaseModel):
+    content: Optional[str] = None
+
+
+class GroupMessageReactionCreate(BaseModel):
+    reaction_type: str  # like, love, laugh, wow, sad, angry
+
+
+class GroupMessageReactionResponse(BaseModel):
+    id: int
+    message_id: int
+    user_id: int
+    reaction_type: str
+    created_at: datetime
+    user: UserPublic
+    
+    class Config:
+        from_attributes = True
+
+
+class GroupMessageResponse(BaseModel):
+    id: int
+    group_id: int
+    sender_id: int
+    content: Optional[str] = None
+    attachment: Optional[str] = None
+    message_type: str
+    location_lat: Optional[float] = None
+    location_lng: Optional[float] = None
+    is_deleted: bool
+    edited_at: Optional[datetime] = None
+    created_at: datetime
+    sender: UserPublic
+    reactions: Optional[list[GroupMessageReactionResponse]] = []
+    
+    class Config:
+        from_attributes = True
+

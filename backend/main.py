@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import os
 
-from backend.routers import auth, admin, users, messages
+from backend.routers import auth, admin, users, messages, groups
 from backend.database import create_tables, init_default_admin
 from backend.config import settings
 
@@ -49,6 +49,7 @@ app.include_router(auth.router, prefix="/api/auth", tags=["Authentication"])
 app.include_router(admin.router, prefix="/api/admin", tags=["Admin"])
 app.include_router(users.router, prefix="/api/users", tags=["Users"])
 app.include_router(messages.router, prefix="/api/messages", tags=["Messages"])
+app.include_router(groups.router, prefix="/api/groups", tags=["Groups"])
 
 # Static files for uploads
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")

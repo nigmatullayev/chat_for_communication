@@ -206,6 +206,46 @@ async def get_follow_status(
     return {"following": follow is not None}
 
 
+@router.get("/{user_id}/followers", response_model=List[UserResponse])
+async def get_followers(
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session)
+):
+    """Get list of users who follow this user"""
+    user = session.get(User, user_id)
+    if not user or not user.is_active:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Get all followers
+    followers = session.exec(
+        select(User).join(Follow, User.id == Follow.follower_id)
+        .where(Follow.following_id == user_id, User.is_active == True)
+    ).all()
+    
+    return followers
+
+
+@router.get("/{user_id}/following", response_model=List[UserResponse])
+async def get_following(
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session)
+):
+    """Get list of users this user is following"""
+    user = session.get(User, user_id)
+    if not user or not user.is_active:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Get all users being followed
+    following = session.exec(
+        select(User).join(Follow, User.id == Follow.following_id)
+        .where(Follow.follower_id == user_id, User.is_active == True)
+    ).all()
+    
+    return following
+
+
 @router.put("/me/password")
 async def change_password(
     old_password: str,
