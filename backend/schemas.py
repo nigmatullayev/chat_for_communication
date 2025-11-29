@@ -100,13 +100,16 @@ class MessageResponse(BaseModel):
     message_type: str
     location_lat: Optional[float] = None
     location_lng: Optional[float] = None
+    reply_to_message_id: Optional[int] = None
     is_read: bool
+    read_at: Optional[datetime] = None
     is_deleted: bool
     edited_at: Optional[datetime] = None
     created_at: datetime
     sender: UserPublic
     receiver: UserPublic
     reactions: Optional[list[MessageReactionResponse]] = []
+    reply_to: Optional[dict] = None  # Custom field for reply context
     
     class Config:
         from_attributes = True

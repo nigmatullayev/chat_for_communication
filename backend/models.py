@@ -37,10 +37,12 @@ class Message(SQLModel, table=True):
     receiver_id: int = Field(foreign_key="users.id")
     content: Optional[str] = None
     attachment: Optional[str] = None
-    message_type: str = Field(default="text")  # text, image, video, location, circular_video
+    message_type: str = Field(default="text")  # text, image, video, location, circular_video, audio
     location_lat: Optional[float] = None
     location_lng: Optional[float] = None
+    reply_to_message_id: Optional[int] = Field(default=None, foreign_key="messages.id")
     is_read: bool = Field(default=False)
+    read_at: Optional[datetime] = None
     is_deleted: bool = Field(default=False)
     edited_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -49,6 +51,7 @@ class Message(SQLModel, table=True):
     sender: User = Relationship(back_populates="sent_messages", sa_relationship_kwargs={"foreign_keys": "Message.sender_id"})
     receiver: User = Relationship(back_populates="received_messages", sa_relationship_kwargs={"foreign_keys": "Message.receiver_id"})
     reactions: list["MessageReaction"] = Relationship(back_populates="message")
+    reply_to: Optional["Message"] = Relationship(sa_relationship_kwargs={"foreign_keys": "Message.reply_to_message_id", "remote_side": "Message.id"})
 
 
 class MessageReaction(SQLModel, table=True):
@@ -148,7 +151,7 @@ class GroupMessage(SQLModel, table=True):
     sender_id: int = Field(foreign_key="users.id")
     content: Optional[str] = None
     attachment: Optional[str] = None
-    message_type: str = Field(default="text")  # text, image, video, location, circular_video
+    message_type: str = Field(default="text")  # text, image, video, location, circular_video, audio
     location_lat: Optional[float] = None
     location_lng: Optional[float] = None
     is_deleted: bool = Field(default=False)

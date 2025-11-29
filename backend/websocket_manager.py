@@ -53,6 +53,7 @@ class ConnectionManager:
             message_type = data.get("message_type", "text")
             location_lat = data.get("location_lat")
             location_lng = data.get("location_lng")
+            reply_to_message_id = data.get("reply_to_message_id")
             
             if not receiver_id:
                 return
@@ -65,7 +66,8 @@ class ConnectionManager:
                 attachment=attachment,
                 message_type=message_type,
                 location_lat=location_lat,
-                location_lng=location_lng
+                location_lng=location_lng,
+                reply_to_message_id=reply_to_message_id
             )
             session.add(message)
             session.commit()
@@ -73,6 +75,34 @@ class ConnectionManager:
             
             # Get sender info
             sender = session.get(User, sender_id)
+            
+            # Load reply_to message if exists
+            reply_to_data = None
+            if reply_to_message_id:
+                reply_to_msg = session.get(Message, reply_to_message_id)
+                if reply_to_msg:
+                    reply_to_sender = session.get(User, reply_to_msg.sender_id)
+                    reply_to_data = {
+                        "id": reply_to_msg.id,
+                        "content": reply_to_msg.content,
+                        "attachment": reply_to_msg.attachment,
+                        "message_type": reply_to_msg.message_type,
+                        "sender": {
+                            "id": reply_to_sender.id if reply_to_sender else None,
+                            "username": reply_to_sender.username if reply_to_sender else "Unknown",
+                            "first_name": reply_to_sender.first_name if reply_to_sender else None
+                        }
+                    }
+                else:
+                    # If message not found in DB, use reply_to data from frontend if provided
+                    frontend_reply_to = data.get("reply_to")
+                    if frontend_reply_to:
+                        reply_to_data = frontend_reply_to
+            else:
+                # No reply_to_message_id, but check if reply_to data was sent from frontend
+                frontend_reply_to = data.get("reply_to")
+                if frontend_reply_to:
+                    reply_to_data = frontend_reply_to
             
             # Prepare message data
             message_data = {
@@ -86,6 +116,8 @@ class ConnectionManager:
                 "message_type": message_type,
                 "location_lat": location_lat,
                 "location_lng": location_lng,
+                "reply_to_message_id": reply_to_message_id,
+                "reply_to": reply_to_data,
                 "sender": {
                     "id": sender.id,
                     "username": sender.username,
@@ -94,7 +126,9 @@ class ConnectionManager:
                     "last_name": sender.last_name
                 },
                 "created_at": message.created_at.isoformat(),
-                "timestamp": message.created_at.isoformat()
+                "timestamp": message.created_at.isoformat(),
+                "is_read": message.is_read,
+                "read_at": message.read_at.isoformat() if message.read_at else None
             }
             
             # Include temp_id if provided
@@ -484,6 +518,58 @@ class ConnectionManager:
             # Send to both sender and receiver
             await self.send_personal_message(delete_update, message.receiver_id)
             await self.send_personal_message(delete_update, message.sender_id)
+        
+        elif msg_type == "mark_read":
+            # Handle marking messages as read
+            message_ids = data.get("message_ids", [])
+            user_id = data.get("user_id")  # The user whose messages should be marked as read
+            
+            print(f"🔔 mark_read received: sender_id={sender_id}, user_id={user_id}, message_ids={message_ids}")
+            
+            if not message_ids or not user_id:
+                print(f"⚠️ mark_read: Missing message_ids or user_id")
+                return
+            
+            # Get messages that belong to this user and are received by sender
+            read_timestamp = datetime.now(timezone.utc)
+            read_message_ids = []
+            
+            for msg_id in message_ids:
+                message = session.get(Message, msg_id)
+                if message:
+                    print(f"📨 Checking message {msg_id}: receiver_id={message.receiver_id}, sender_id={message.sender_id}, is_read={message.is_read}")
+                    # Check if message belongs to this conversation
+                    if message.receiver_id == sender_id and message.sender_id == user_id:
+                        # Only update read_at when marking as read for the first time
+                        if not message.is_read:
+                            message.is_read = True
+                            message.read_at = read_timestamp
+                            session.add(message)
+                            read_message_ids.append(msg_id)
+                        elif message.is_read and not message.read_at:
+                            # If message is marked as read but read_at is missing, set it
+                            message.read_at = read_timestamp
+                            session.add(message)
+                            read_message_ids.append(msg_id)
+                else:
+                    print(f"⚠️ Message {msg_id} not found in database")
+            
+            if read_message_ids:
+                session.commit()
+                print(f"💾 Committed {len(read_message_ids)} read status updates")
+                
+                # Send read status update to sender (the one who sent the messages)
+                read_update = {
+                    "type": "messages_read",
+                    "message_ids": read_message_ids,
+                    "read_at": read_timestamp.isoformat(),
+                    "reader_id": sender_id
+                }
+                
+                print(f"📤 Sending messages_read to user_id={user_id}: {read_update}")
+                await self.send_personal_message(read_update, user_id)
+            else:
+                print(f"⚠️ No messages to mark as read")
 
 
 manager = ConnectionManager()

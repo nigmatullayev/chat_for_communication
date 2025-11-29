@@ -3,7 +3,7 @@ Messages and WebSocket endpoints
 """
 from typing import List, Optional
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, Query, HTTPException, status, UploadFile, File
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, Query, HTTPException, status, UploadFile, File, Form
 from sqlmodel import Session, select
 
 from backend.database import get_session
@@ -131,10 +131,13 @@ async def get_chat_history(
     
     messages = session.exec(query).all()
     
-    # Mark messages as read
+    # Mark messages as read - only update read_at for newly read messages
+    from datetime import datetime, timezone
+    read_timestamp = datetime.now(timezone.utc)
     for msg in messages:
         if msg.receiver_id == current_user.id and not msg.is_read:
             msg.is_read = True
+            msg.read_at = read_timestamp
             session.add(msg)
     
     session.commit()
@@ -157,8 +160,87 @@ async def get_chat_history(
         for msg in messages:
             msg.reactions = reactions_by_message.get(msg.id, [])
     
-    # Return in chronological order
-    return list(reversed(messages))
+    # Load reply_to messages and attach as dict (not as model attribute)
+    reply_to_ids = [msg.reply_to_message_id for msg in messages if msg.reply_to_message_id]
+    reply_to_data = {}
+    if reply_to_ids:
+        reply_to_messages = session.exec(
+            select(Message).where(Message.id.in_(reply_to_ids))
+        ).all()
+        reply_to_by_id = {msg.id: msg for msg in reply_to_messages}
+        
+        for msg in messages:
+            if msg.reply_to_message_id and msg.reply_to_message_id in reply_to_by_id:
+                reply_msg = reply_to_by_id[msg.reply_to_message_id]
+                reply_sender = session.get(User, reply_msg.sender_id)
+                # Store reply_to data separately, not as model attribute
+                reply_to_data[msg.id] = {
+                    "id": reply_msg.id,
+                    "content": reply_msg.content,
+                    "attachment": reply_msg.attachment,
+                    "message_type": reply_msg.message_type,
+                    "sender": {
+                        "id": reply_sender.id if reply_sender else None,
+                        "username": reply_sender.username if reply_sender else "Unknown",
+                        "first_name": reply_sender.first_name if reply_sender else None
+                    }
+                }
+    
+    # Create MessageResponse objects with reply_to data
+    result_messages = []
+    for msg in reversed(messages):
+        # Create base response dict
+        response_data = {
+            "id": msg.id,
+            "sender_id": msg.sender_id,
+            "receiver_id": msg.receiver_id,
+            "content": msg.content,
+            "attachment": msg.attachment,
+            "message_type": msg.message_type,
+            "location_lat": msg.location_lat,
+            "location_lng": msg.location_lng,
+            "reply_to_message_id": msg.reply_to_message_id,
+            "is_read": msg.is_read,
+            "read_at": msg.read_at.isoformat() if msg.read_at else None,
+            "is_deleted": msg.is_deleted,
+            "edited_at": msg.edited_at,
+            "created_at": msg.created_at,
+            "sender": {
+                "id": msg.sender.id,
+                "username": msg.sender.username,
+                "profile_pic": msg.sender.profile_pic,
+                "is_active": msg.sender.is_active
+            },
+            "receiver": {
+                "id": msg.receiver.id,
+                "username": msg.receiver.username,
+                "profile_pic": msg.receiver.profile_pic,
+                "is_active": msg.receiver.is_active
+            },
+            "reactions": [{
+                "id": r.id,
+                "message_id": r.message_id,
+                "user_id": r.user_id,
+                "reaction_type": r.reaction_type,
+                "created_at": r.created_at,
+                "user": {
+                    "id": r.user.id,
+                    "username": r.user.username,
+                    "profile_pic": r.user.profile_pic,
+                    "is_active": r.user.is_active
+                }
+            } for r in msg.reactions] if hasattr(msg, 'reactions') and msg.reactions else []
+        }
+        
+        # Add reply_to if exists
+        if msg.id in reply_to_data:
+            response_data["reply_to"] = reply_to_data[msg.id]
+        
+        # Create MessageResponse from dict
+        result_messages.append(MessageResponse(**response_data))
+    
+    # Return messages
+    return result_messages
 
 
 @router.websocket("/ws/{user_id}")
@@ -269,6 +351,8 @@ async def delete_conversation(
     session: Session = Depends(get_session)
 ):
     """Delete all messages in a conversation (soft delete - only sender's messages)"""
+    from backend.websocket_manager import manager
+    
     # Verify the other user exists
     other_user = session.get(User, user_id)
     if not other_user:
@@ -290,13 +374,33 @@ async def delete_conversation(
     
     # Soft delete only messages where current user is the sender
     deleted_count = 0
+    deleted_message_ids = []
     for message in messages:
         if message.sender_id == current_user.id:
             message.is_deleted = True
             session.add(message)
             deleted_count += 1
+            deleted_message_ids.append(message.id)
     
     session.commit()
+    
+    # Send WebSocket notifications for each deleted message
+    for message_id in deleted_message_ids:
+        delete_update = {
+            "type": "message_deleted",
+            "message_id": message_id,
+            "sender_id": current_user.id,
+            "receiver_id": user_id,
+            "from": current_user.id,
+            "sender": {
+                "id": current_user.id,
+                "username": current_user.username,
+                "profile_pic": current_user.profile_pic
+            }
+        }
+        # Send to both sender (current_user) and receiver (other_user)
+        await manager.send_personal_message(delete_update, current_user.id)
+        await manager.send_personal_message(delete_update, user_id)
     
     return {
         "message": "Conversation deleted successfully",
@@ -370,10 +474,10 @@ async def remove_reaction(
 @router.post("/upload")
 async def upload_message_media(
     file: UploadFile = File(...),
-    message_type: str = Query("image"),  # image, video, circular_video
+    message_type: str = Form("image"),  # image, video, circular_video, audio
     current_user: User = Depends(get_current_user)
 ):
-    """Upload media file for messages (image, video, circular video)"""
+    """Upload media file for messages (image, video, circular video, audio)"""
     
     # Validate file type
     file_ext = os.path.splitext(file.filename)[1].lower()
@@ -389,6 +493,12 @@ async def upload_message_media(
             raise HTTPException(
                 status_code=400,
                 detail=f"Invalid video type. Allowed: {', '.join(settings.allowed_video_extensions)}"
+            )
+    elif message_type == "audio":
+        if file_ext not in settings.allowed_audio_extensions:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid audio type. Allowed: {', '.join(settings.allowed_audio_extensions)}"
             )
     else:
         raise HTTPException(status_code=400, detail="Invalid message_type")

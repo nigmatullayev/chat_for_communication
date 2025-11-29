@@ -89,48 +89,75 @@ async def refresh(
     session: Session = Depends(get_session)
 ):
     """Refresh access token"""
-    # Decode refresh token
     try:
-        payload = decode_token(token_data.refresh_token)
-        if payload.get("type") != "refresh":
+        # Decode refresh token
+        try:
+            payload = decode_token(token_data.refresh_token)
+            if payload.get("type") != "refresh":
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid token type"
+                )
+        except JWTError:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token type"
+                detail="Invalid refresh token"
             )
-    except JWTError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid refresh token"
+        
+        # Verify refresh token exists in DB and is not revoked
+        try:
+            db_token = session.exec(
+                select(RefreshToken).where(RefreshToken.token == token_data.refresh_token)
+            ).first()
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Database error: {str(e)}"
+            )
+        
+        if not db_token or db_token.revoked or db_token.expires_at < datetime.now(timezone.utc):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or expired refresh token"
+            )
+        
+        # Get user
+        try:
+            user = session.get(User, db_token.user_id)
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error fetching user: {str(e)}"
+            )
+        
+        if not user or not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not found or inactive"
+            )
+        
+        # Create new access token
+        try:
+            token_data_dict = {"sub": user.username}
+            access_token = create_access_token(token_data_dict)
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error creating access token: {str(e)}"
+            )
+        
+        return TokenResponse(
+            access_token=access_token,
+            refresh_token=token_data.refresh_token,  # Keep same refresh token
+            user=user
         )
-    
-    # Verify refresh token exists in DB and is not revoked
-    db_token = session.exec(
-        select(RefreshToken).where(RefreshToken.token == token_data.refresh_token)
-    ).first()
-    
-    if not db_token or db_token.revoked or db_token.expires_at < datetime.now(timezone.utc):
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired refresh token"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unexpected error during token refresh: {str(e)}"
         )
-    
-    # Get user
-    user = session.get(User, db_token.user_id)
-    if not user or not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found or inactive"
-        )
-    
-    # Create new access token
-    token_data_dict = {"sub": user.username}
-    access_token = create_access_token(token_data_dict)
-    
-    return TokenResponse(
-        access_token=access_token,
-        refresh_token=token_data.refresh_token,  # Keep same refresh token
-        user=user
-    )
 
 
 @router.post("/logout")

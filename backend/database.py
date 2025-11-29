@@ -2,6 +2,7 @@
 Database configuration and initialization
 """
 from sqlmodel import SQLModel, create_engine, Session, select
+from sqlalchemy import text
 from backend.config import settings
 # Import all models to ensure they're registered
 from backend.models import User, Message, MessageReaction, AuditLog, RefreshToken, Follow, Group, GroupMember, GroupMessage, GroupMessageReaction
@@ -13,9 +14,71 @@ engine = create_engine(
 )
 
 
+def migrate_database():
+    """Migrate database schema - add missing columns"""
+    if "sqlite" not in settings.database_url:
+        # For non-SQLite databases, use proper migrations
+        return
+    
+    with Session(engine) as session:
+        try:
+            # Check if reply_to_message_id column exists
+            # PRAGMA table_info returns rows with: cid, name, type, notnull, dflt_value, pk
+            result = session.exec(
+                text("PRAGMA table_info(messages)")
+            ).all()
+            
+            # Extract column names (index 1 is the column name)
+            columns = [row[1] for row in result] if result else []
+            
+            # Check and add reply_to_message_id column if missing
+            if "reply_to_message_id" not in columns:
+                print("🔄 Adding reply_to_message_id column to messages table...")
+                session.exec(
+                    text("ALTER TABLE messages ADD COLUMN reply_to_message_id INTEGER")
+                )
+                session.commit()
+                print("✅ Migration completed: reply_to_message_id column added")
+                # Re-fetch columns after adding
+                result = session.exec(
+                    text("PRAGMA table_info(messages)")
+                ).all()
+                columns = [row[1] for row in result] if result else []
+            
+            # Check and add read_at column if missing
+            if "read_at" not in columns:
+                print("🔄 Adding read_at column to messages table...")
+                session.exec(
+                    text("ALTER TABLE messages ADD COLUMN read_at DATETIME")
+                )
+                session.commit()
+                print("✅ Migration completed: read_at column added")
+                # Re-fetch columns after adding
+                result = session.exec(
+                    text("PRAGMA table_info(messages)")
+                ).all()
+                columns = [row[1] for row in result] if result else []
+            
+            # Print final status
+            if "reply_to_message_id" in columns and "read_at" in columns:
+                print("ℹ️ Database schema is up to date")
+                
+        except Exception as e:
+            session.rollback()
+            error_str = str(e).lower()
+            # If table doesn't exist, that's okay - create_tables will handle it
+            if "no such table" in error_str:
+                print("ℹ️ Messages table doesn't exist yet, will be created by create_tables()")
+            else:
+                print(f"⚠️ Migration error: {e}")
+                # Don't raise - let the app continue
+
+
 def create_tables():
     """Create all database tables"""
     SQLModel.metadata.create_all(engine)
+    # Run migrations after creating tables
+    migrate_database()
 
 
 def get_session():

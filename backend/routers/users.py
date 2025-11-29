@@ -282,18 +282,35 @@ async def change_password(
 
 @router.post("/me/avatar", response_model=UserResponse)
 async def upload_avatar(
-    request: Request,
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session)
 ):
     """Upload profile picture"""
     # Validate file
-    file_ext = os.path.splitext(file.filename)[1].lower()
-    if file_ext not in settings.allowed_extensions:
+    if not file:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid file type. Allowed: {', '.join(settings.allowed_extensions)}"
+            detail="No file provided"
+        )
+    
+    if not file.filename:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File has no filename"
+        )
+    
+    file_ext = os.path.splitext(file.filename)[1].lower()
+    if not file_ext:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File has no extension"
+        )
+    
+    if file_ext not in settings.allowed_image_extensions:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid file type. Only image files are allowed: {', '.join(settings.allowed_image_extensions)}. Received: {file_ext}"
         )
     
     # Create uploads directory if it doesn't exist
@@ -332,13 +349,12 @@ async def upload_avatar(
     session.commit()
     session.refresh(current_user)
     
-    # Log avatar upload
-    ip = get_client_ip(request)
+    # Log avatar upload (skip IP logging for now to avoid Request parameter issues)
     log_event(
         session=session,
         event_type="avatar_uploaded",
         user_id=current_user.id,
-        ip=ip
+        ip="unknown"
     )
     
     return current_user

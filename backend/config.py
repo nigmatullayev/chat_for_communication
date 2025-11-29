@@ -26,9 +26,10 @@ class Settings(BaseSettings):
     # File uploads
     upload_dir: str = "uploads"
     max_upload_size: int = 50 * 1024 * 1024  # 50 MB for videos
-    allowed_extensions: set = {".jpg", ".jpeg", ".png", ".gif", ".mp4", ".webm", ".mov"}
-    allowed_image_extensions: set = {".jpg", ".jpeg", ".png", ".gif"}
+    allowed_extensions: set = {".jpg", ".jpeg", ".png", ".gif", ".jfif", ".webp", ".mp4", ".webm", ".mov", ".m4a", ".ogg", ".wav", ".mp3"}
+    allowed_image_extensions: set = {".jpg", ".jpeg", ".png", ".gif", ".jfif", ".webp"}
     allowed_video_extensions: set = {".mp4", ".webm", ".mov"}
+    allowed_audio_extensions: set = {".webm", ".m4a", ".ogg", ".wav", ".mp3"}
     
     # Password hashing
     bcrypt_work_factor: int = 12

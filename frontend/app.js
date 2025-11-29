@@ -21,6 +21,7 @@ let screenShareStream = null;
 let isOnHold = false;
 let currentCallType = null; // 'video' or 'audio'
 let pendingMedia = { type: null, file: null, url: null, location: null };
+let pendingReply = null; // Store reply information { id, content, sender, message_type, attachment }
 let editingMessageId = null;
 let reactingMessageId = null;
 let isLoggedOut = false;
@@ -28,6 +29,13 @@ let pendingTimeouts = [];
 let abortControllers = [];
 let pendingMessages = new Map(); // Track pending optimistic messages
 let messageIdCounter = 0; // For temporary message IDs
+
+// Voice message recording variables
+let voiceMediaRecorder = null;
+let voiceAudioChunks = [];
+let isVoiceRecording = false;
+let voiceRecordingStartTime = null;
+let voiceRecordingTimer = null;
 
 // WebRTC Configuration
 const rtcConfig = {
@@ -71,18 +79,11 @@ function checkAuth() {
         isLoggedOut = false; // Reset logout flag if token exists
         accessToken = token;
         refreshToken = localStorage.getItem('refreshToken');
-        // Load user profile, but handle 401 errors gracefully
+        // Load user profile, but don't show login screen on error - let loadUserProfile handle it
         loadUserProfile().catch(error => {
-            console.error('Error loading user profile:', error);
-            // If token is invalid, clear it and show login
-            if (error.status === 401 || error.message?.includes('401')) {
-                localStorage.removeItem('accessToken');
-                localStorage.removeItem('refreshToken');
-                accessToken = null;
-                refreshToken = null;
-                isLoggedOut = true;
-                showLoginScreen();
-            }
+            console.error('Error loading user profile in checkAuth:', error);
+            // Don't show login screen here - loadUserProfile will handle it if needed
+            // This prevents redirecting to login on page refresh
         });
     } else {
         isLoggedOut = true; // Set logout flag if no token
@@ -434,12 +435,46 @@ function setupEventListeners() {
             sendMessage();
         });
     }
-    document.getElementById('messageInput').addEventListener('keypress', (e) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            sendMessage();
-        }
-    });
+    // Typing indicator - send typing status
+    let typingTimeout;
+    let typingSent = false;
+    const messageInput = document.getElementById('messageInput');
+    if (messageInput) {
+        messageInput.addEventListener('input', () => {
+            if (!currentChatUserId) return;
+            
+            // Send typing indicator
+            if (!typingSent && wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+                wsConnection.send(JSON.stringify({
+                    type: 'typing',
+                    to: currentChatUserId
+                }));
+                typingSent = true;
+            }
+            
+            // Clear previous timeout
+            clearTimeout(typingTimeout);
+            
+            // Stop typing after 3 seconds of inactivity
+            typingTimeout = setTimeout(() => {
+                typingSent = false;
+            }, 3000);
+        });
+        
+        messageInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                clearTimeout(typingTimeout);
+                typingSent = false;
+                sendMessage();
+            }
+        });
+        
+        messageInput.addEventListener('blur', () => {
+            clearTimeout(typingTimeout);
+            typingSent = false;
+        });
+    }
     
     // Calls - with permission check
     const callBtn = document.getElementById('callBtn');
@@ -528,6 +563,38 @@ function setupEventListeners() {
         });
     }
     
+    // Voice message button
+    const voiceBtn = document.getElementById('voiceBtn');
+    if (voiceBtn) {
+        // Mouse events for desktop
+        voiceBtn.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            startVoiceRecording();
+        });
+        voiceBtn.addEventListener('mouseup', (e) => {
+            e.preventDefault();
+            stopVoiceRecording();
+        });
+        voiceBtn.addEventListener('mouseleave', (e) => {
+            e.preventDefault();
+            stopVoiceRecording();
+        });
+        
+        // Touch events for mobile
+        voiceBtn.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            startVoiceRecording();
+        });
+        voiceBtn.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            stopVoiceRecording();
+        });
+        voiceBtn.addEventListener('touchcancel', (e) => {
+            e.preventDefault();
+            stopVoiceRecording();
+        });
+    }
+    
     // Media upload buttons
     document.getElementById('attachImageBtn')?.addEventListener('click', () => {
         document.getElementById('imageInput').click();
@@ -547,6 +614,38 @@ function setupEventListeners() {
     // Message context menu
     document.getElementById('editMessageBtn')?.addEventListener('click', handleEditMessage);
     document.getElementById('deleteMessageBtn')?.addEventListener('click', handleDeleteMessage);
+    
+    // Cancel reply button
+    const cancelReplyBtn = document.getElementById('cancelReplyBtn');
+    if (cancelReplyBtn) {
+        cancelReplyBtn.addEventListener('click', () => {
+            pendingReply = null;
+            const replyIndicator = document.getElementById('replyIndicator');
+            if (replyIndicator) {
+                replyIndicator.classList.add('hidden');
+            }
+        });
+    }
+    
+    // Emoji picker
+    const emojiBtn = document.getElementById('emojiBtn');
+    if (emojiBtn) {
+        emojiBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleEmojiPicker();
+        });
+    }
+    
+    // Initialize emoji picker
+    initializeEmojiPicker();
+    
+    // Close emoji picker when clicking outside
+    document.addEventListener('click', (e) => {
+        const emojiPicker = document.getElementById('emojiPicker');
+        if (emojiPicker && !emojiPicker.contains(e.target) && e.target !== emojiBtn && !emojiBtn?.contains(e.target)) {
+            emojiPicker.classList.add('hidden');
+        }
+    });
     document.getElementById('reactMessageBtn')?.addEventListener('click', showReactionPicker);
     
     // Reaction picker - use event delegation since buttons are dynamically created
@@ -1057,28 +1156,107 @@ function displayConversations(conversations) {
 
 // Delete conversation
 async function deleteConversation(userId, username) {
+    if (!userId || !username) {
+        console.error('Invalid parameters for deleteConversation:', { userId, username });
+        return;
+    }
+    
     if (!confirm(`Are you sure you want to delete the conversation with "${username}"? This will delete all your messages in this conversation.`)) {
         return;
     }
     
+    // Check if we have access token
+    if (!accessToken) {
+        console.error('No access token available for deleting conversation');
+        alert('You need to be logged in to delete conversations. Please refresh the page.');
+        return;
+    }
+    
     try {
+        console.log('Deleting conversation with user:', userId);
         const response = await fetch(`${API_BASE}/messages/conversations/${userId}`, {
             method: 'DELETE',
-            headers: { 'Authorization': `Bearer ${accessToken}` }
+            headers: { 
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json'
+            }
         });
+        
+        console.log('Delete conversation response status:', response.status);
         
         if (response.ok) {
             const data = await response.json();
-            showSuccess('Conversation deleted successfully');
+            console.log('Conversation deleted successfully:', data);
+            
+            // If the deleted conversation is currently open, close it
+            if (currentChatUserId === userId) {
+                // Close current chat
+                const chatView = document.getElementById('chatView');
+                if (chatView) {
+                    chatView.classList.add('hidden');
+                }
+                
+                // Clear chat messages
+                const chatMessages = document.getElementById('chatMessages');
+                if (chatMessages) {
+                    chatMessages.innerHTML = '';
+                }
+                
+                // Clear current chat user
+                currentChatUserId = null;
+                
+                // Clear reply indicator if any
+                pendingReply = null;
+                const replyIndicator = document.getElementById('replyIndicator');
+                if (replyIndicator) {
+                    replyIndicator.classList.add('hidden');
+                }
+                
+                // Clear message input
+                const messageInput = document.getElementById('messageInput');
+                if (messageInput) {
+                    messageInput.value = '';
+                    messageInput.style.height = 'auto';
+                }
+                
+                // Hide media preview
+                const mediaPreview = document.getElementById('mediaPreview');
+                if (mediaPreview) {
+                    mediaPreview.classList.add('hidden');
+                }
+                pendingMedia = { type: null, file: null, url: null, location: null };
+            }
+            
+            // Show success message
+            alert('Conversation deleted successfully');
+            
             // Reload conversations list
-            loadConversations();
+            await loadConversations();
+            
+            // If the deleted conversation was open, reload chat history to remove deleted messages
+            if (currentChatUserId === userId) {
+                // Reload chat history to show updated messages (deleted ones will be filtered out by backend)
+                await loadChatHistory(userId);
+            }
+        } else if (response.status === 401) {
+            // Token expired, try to refresh
+            console.log('Token expired, attempting refresh...');
+            const refreshed = await refreshAccessToken();
+            if (refreshed) {
+                // Retry deletion with new token
+                console.log('Token refreshed, retrying delete...');
+                return deleteConversation(userId, username);
+            } else {
+                alert('Session expired. Please refresh the page and try again.');
+            }
         } else {
-            const errorData = await response.json();
-            showError(errorData.detail || 'Failed to delete conversation');
+            const errorData = await response.json().catch(() => ({ detail: 'Failed to delete conversation' }));
+            console.error('Delete conversation error:', errorData);
+            alert(errorData.detail || 'Failed to delete conversation. Please try again.');
         }
     } catch (error) {
         console.error('Error deleting conversation:', error);
-        showError('Failed to delete conversation. Please try again.');
+        alert('Failed to delete conversation. Please check your connection and try again.');
     }
 }
 
@@ -2785,7 +2963,17 @@ async function refreshAccessToken() {
             console.log('Token refreshed successfully');
             return true;
         } else {
-            console.error('Token refresh failed:', response.status);
+            const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }));
+            console.error('Token refresh failed:', response.status, errorData.detail || errorData);
+            
+            // If refresh token is invalid/expired, clear tokens and show login
+            if (response.status === 401) {
+                localStorage.removeItem('accessToken');
+                localStorage.removeItem('refreshToken');
+                accessToken = null;
+                refreshToken = null;
+            }
+            
             return false;
         }
     } catch (error) {
@@ -2837,19 +3025,26 @@ async function loadUserProfile() {
                     return;
                 }
             }
-            // Refresh failed, clear tokens and show login
-            localStorage.removeItem('accessToken');
-            localStorage.removeItem('refreshToken');
-            accessToken = null;
-            refreshToken = null;
-            isLoggedOut = true;
-            showLoginScreen();
-            throw new Error('Authentication failed');
+            // Refresh failed - don't automatically redirect to login on page refresh
+            // Keep user on current page, they can manually refresh if needed
+            console.warn('Token refresh failed in loadUserProfile - keeping user on page');
+            // Don't clear tokens or show login automatically - preserve user state
+            // User can manually refresh page or logout if needed
+            return;
         }
         
         if (response.ok) {
             const user = await response.json();
             currentUser = user;
+            
+            // Show app screen if we're on login screen (e.g., on page refresh with valid token)
+            const loginScreen = document.getElementById('loginScreen');
+            const appScreen = document.getElementById('appScreen');
+            if (loginScreen && !loginScreen.classList.contains('hidden')) {
+                showAppScreen();
+            } else if (appScreen && appScreen.classList.contains('hidden')) {
+                showAppScreen();
+            }
             
             // Update admin nav visibility
             updateAdminNavVisibility();
@@ -2888,9 +3083,16 @@ async function loadUserProfile() {
                     ? `/uploads/${user.profile_pic}` 
                     : '/static/default-avatar.png';
             }
+            
+            // Load conversations and connect WebSocket
+            loadConversations();
+            if (!wsConnection || wsConnection.readyState !== WebSocket.OPEN) {
+                connectWebSocket();
+            }
         }
     } catch (error) {
         console.error('Error loading profile:', error);
+        // Don't show login screen on error - keep user on current page
     }
 }
 
@@ -2996,7 +3198,7 @@ function openChat(userId, username, avatar) {
     document.getElementById('chatView').classList.add('active');
     
     document.getElementById('chatUserName').textContent = username;
-    document.getElementById('chatUserAvatar').src = avatar ? `/uploads/${avatar}` : '/static/default-avatar.png';
+    document.getElementById('chatUserAvatar').src = getAvatarPath(avatar);
     
     loadChatHistory(userId);
 }
@@ -3011,6 +3213,36 @@ async function loadChatHistory(userId) {
         if (response.ok) {
             const messages = await response.json();
             displayMessages(messages);
+            
+            // Mark only unread messages as read via WebSocket
+            const unreadMessageIds = messages
+                .filter(msg => msg.sender_id === userId && msg.receiver_id === currentUser.id && !msg.is_read)
+                .map(msg => msg.id);
+            
+            if (unreadMessageIds.length > 0) {
+                if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+                    wsConnection.send(JSON.stringify({
+                        type: 'mark_read',
+                        message_ids: unreadMessageIds,
+                        user_id: userId
+                    }));
+                } else {
+                    // Try to reconnect WebSocket
+                    if (!wsConnection) {
+                        connectWebSocket();
+                        // Wait a bit and try again
+                        setTimeout(() => {
+                            if (wsConnection && wsConnection.readyState === WebSocket.OPEN && unreadMessageIds.length > 0) {
+                                wsConnection.send(JSON.stringify({
+                                    type: 'mark_read',
+                                    message_ids: unreadMessageIds,
+                                    user_id: userId
+                                }));
+                            }
+                        }, 1000);
+                    }
+                }
+            }
         }
     } catch (error) {
         console.error('Error loading chat history:', error);
@@ -3023,15 +3255,8 @@ function displayMessages(messages) {
     container.innerHTML = '';
     
     messages.forEach(msg => {
+        // Skip deleted messages completely - don't show them at all
         if (msg.is_deleted) {
-            const msgEl = document.createElement('div');
-            msgEl.className = `message-item deleted ${msg.sender_id === currentUser.id ? 'own' : ''}`;
-            msgEl.innerHTML = `
-                <div class="message-bubble deleted-message">
-                    <i class="fas fa-trash"></i> This message was deleted
-                </div>
-            `;
-            container.appendChild(msgEl);
             return;
         }
         
@@ -3062,10 +3287,75 @@ function displayMessages(messages) {
                     </div>
                 </div>
             `;
+        } else if (msg.message_type === 'audio' && msg.attachment) {
+            // Generate unique audioId - use message ID if available, otherwise use timestamp + random
+            const audioId = msg.id ? `audio_${msg.id}` : `audio_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            messageContent = `
+                <div class="message-audio" data-audio-id="${audioId}">
+                    <div class="audio-player-custom">
+                        <button class="audio-play-btn" data-audio-id="${audioId}">
+                            <i class="fas fa-play"></i>
+                        </button>
+                        <div class="audio-waveform-container">
+                            <div class="audio-waveform" data-audio-id="${audioId}">
+                                <div class="waveform-bars"></div>
+                                <div class="waveform-progress"></div>
+                            </div>
+                            <div class="audio-info">
+                                <span class="audio-current-time" data-audio-id="${audioId}">00:00</span>
+                                <span class="audio-separator"> / </span>
+                                <span class="audio-duration" data-audio-id="${audioId}">00:00</span>
+                                <span class="audio-size" data-audio-id="${audioId}">, --</span>
+                            </div>
+                        </div>
+                        <audio class="audio-element" data-audio-id="${audioId}" preload="metadata">
+                            <source src="/uploads/${msg.attachment}" type="audio/webm">
+                            <source src="/uploads/${msg.attachment}" type="audio/mp4">
+                            <source src="/uploads/${msg.attachment}" type="audio/ogg">
+                        </audio>
+                    </div>
+                </div>
+            `;
+            // Store audioId in msgEl for later initialization
+            if (!msgEl.dataset.audioId) {
+                msgEl.dataset.audioId = audioId;
+            }
         }
         
         if (msg.content) {
             messageContent += `<div class="message-text">${escapeHtml(msg.content)}</div>`;
+        }
+        
+        // Reply indicator display (above message content)
+        let replyContextHtml = '';
+        if (msg.reply_to || msg.reply_to_message_id) {
+            const replyTo = msg.reply_to || {};
+            const replyToMessageId = msg.reply_to_message_id || replyTo.id || null;
+            const replySenderName = replyTo.sender?.username || replyTo.sender?.first_name || 'Unknown';
+            
+            // Reply context inside message bubble
+            let replyPreview = '';
+            if (replyTo.message_type === 'image') {
+                replyPreview = '<i class="fas fa-image"></i> Image';
+            } else if (replyTo.message_type === 'video') {
+                replyPreview = '<i class="fas fa-video"></i> Video';
+            } else if (replyTo.message_type === 'location') {
+                replyPreview = '<i class="fas fa-map-marker-alt"></i> Location';
+            } else if (replyTo.message_type === 'audio') {
+                replyPreview = '<i class="fas fa-microphone"></i> Voice Message';
+            } else {
+                replyPreview = escapeHtml((replyTo.content || '').substring(0, 50)) + (replyTo.content && replyTo.content.length > 50 ? '...' : '');
+            }
+            
+            replyContextHtml = `
+                <div class="message-reply-context" data-reply-to-id="${replyToMessageId || ''}" style="cursor: pointer;">
+                    <div class="message-reply-indicator"></div>
+                    <div class="message-reply-content">
+                        <div class="message-reply-sender">${escapeHtml(replySenderName)}</div>
+                        <div class="message-reply-text">${replyPreview}</div>
+                    </div>
+                </div>
+            `;
         }
         
         // Reactions display
@@ -3088,20 +3378,58 @@ function displayMessages(messages) {
             reactionsHtml += '</div>';
         }
         
-        msgEl.innerHTML = `
-            <img src="${isOwn ? (currentUser.profile_pic ? `/uploads/${currentUser.profile_pic}` : '/static/default-avatar.png') : 
-                      (msg.sender.profile_pic ? `/uploads/${msg.sender.profile_pic}` : '/static/default-avatar.png')}" 
-                 alt="Avatar" class="avatar-small">
-            <div class="message-bubble">
-                ${messageContent}
-                ${reactionsHtml}
-                <div class="message-time">
-                    ${formatTime(msg.created_at)}
-                    ${msg.edited_at ? '<span class="edited-badge">(edited)</span>' : ''}
-                </div>
-                ${isOwn ? '<button class="message-menu-btn" onclick="showMessageMenu(event, ' + msg.id + ')"><i class="fas fa-ellipsis-v"></i></button>' : ''}
+        const sender = msg.sender || currentUser;
+        const senderAvatar = getAvatarPath(sender.profile_pic);
+        const currentUserAvatar = getAvatarPath(currentUser.profile_pic);
+        
+        // Action buttons HTML
+        const actionButtonsHtml = `
+            <div class="message-actions-top">
+                <button class="message-action-btn react-btn" data-message-id="${msg.id}" title="React">
+                    <i class="far fa-smile"></i>
+                </button>
+                <button class="message-action-btn reply-btn" data-message-id="${msg.id}" title="Reply">
+                    <i class="fas fa-reply"></i>
+                </button>
+                ${isOwn 
+                    ? `<button class="message-action-btn edit-btn" data-message-id="${msg.id}" title="Edit">
+                        <i class="fas fa-edit"></i>
+                       </button>`
+                    : `<button class="message-action-btn delete-btn" data-message-id="${msg.id}" title="Delete">
+                        <i class="fas fa-trash"></i>
+                       </button>`
+                }
             </div>
         `;
+        
+        // For own messages: actions first, then message bubble, then avatar
+        // For others' messages: avatar first, then message bubble, then actions
+        msgEl.innerHTML = isOwn
+            ? `${actionButtonsHtml}
+               <div class="message-bubble">
+                   ${replyContextHtml}
+                   ${messageContent}
+                   ${reactionsHtml}
+                   <div class="message-time">
+                       ${msg.isOptimistic ? '<span class="sending-indicator">Sending...</span>' : formatTime(msg.created_at || msg.timestamp || new Date().toISOString())}
+                       ${msg.edited_at ? '<span class="edited-badge">(edited)</span>' : ''}
+                   </div>
+                   ${isOwn ? getReadStatusHtml(msg) : ''}
+               </div>
+               <img src="${currentUserAvatar}" 
+                    alt="Avatar" class="avatar-small">`
+            : `<img src="${senderAvatar}" 
+                    alt="Avatar" class="avatar-small">
+               <div class="message-bubble">
+                   ${replyContextHtml}
+                   ${messageContent}
+                   ${reactionsHtml}
+                   <div class="message-time">
+                       ${msg.isOptimistic ? '<span class="sending-indicator">Sending...</span>' : formatTime(msg.created_at || msg.timestamp || new Date().toISOString())}
+                       ${msg.edited_at ? '<span class="edited-badge">(edited)</span>' : ''}
+                   </div>
+               </div>
+               ${actionButtonsHtml}`;
         
         if (isOwn) {
             msgEl.addEventListener('contextmenu', (e) => {
@@ -3118,10 +3446,153 @@ function displayMessages(messages) {
             showReactionPickerAt(rect.left + rect.width / 2, rect.top - 60);
         });
         
+        // Add click listener to reply context to scroll to original message
+        const replyContext = msgEl.querySelector('.message-reply-context');
+        if (replyContext) {
+            replyContext.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const replyToId = replyContext.dataset.replyToId;
+                if (replyToId) {
+                    scrollToMessage(replyToId);
+                }
+            });
+        }
+        
+        // Add event listeners for action buttons
+        const reactBtn = msgEl.querySelector('.react-btn');
+        if (reactBtn) {
+            reactBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                reactingMessageId = msg.id;
+                const rect = msgEl.getBoundingClientRect();
+                showReactionPickerAt(rect.left + rect.width / 2, rect.top - 60);
+            });
+        }
+        
+        const replyBtn = msgEl.querySelector('.reply-btn');
+        if (replyBtn) {
+            replyBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                // Set pending reply
+                pendingReply = {
+                    id: msg.id,
+                    content: msg.content || '',
+                    sender: msg.sender || { username: 'Unknown', first_name: 'Unknown' },
+                    message_type: msg.message_type || 'text',
+                    attachment: msg.attachment || null
+                };
+                // Show reply preview using replyIndicator
+                const replyIndicator = document.getElementById('replyIndicator');
+                const replyIndicatorLabel = replyIndicator?.querySelector('.reply-indicator-label');
+                const replyIndicatorMessage = document.getElementById('replyIndicatorMessage');
+                const cancelReplyBtn = document.getElementById('cancelReplyBtn');
+                
+                if (replyIndicator && replyIndicatorLabel && replyIndicatorMessage) {
+                    const senderName = pendingReply.sender?.first_name || pendingReply.sender?.username || 'Unknown';
+                    let previewText = pendingReply.content || '';
+                    if (pendingReply.message_type === 'image') previewText = '📷 Image';
+                    else if (pendingReply.message_type === 'video') previewText = '🎥 Video';
+                    else if (pendingReply.message_type === 'audio') previewText = '🎤 Voice Message';
+                    else if (pendingReply.message_type === 'location') previewText = '📍 Location';
+                    
+                    replyIndicatorLabel.textContent = `Replying to ${senderName}`;
+                    replyIndicatorMessage.textContent = previewText.substring(0, 50) + (previewText.length > 50 ? '...' : '');
+                    replyIndicator.classList.remove('hidden');
+                    
+                    // Add cancel button listener
+                    if (cancelReplyBtn) {
+                        cancelReplyBtn.onclick = () => {
+                            pendingReply = null;
+                            replyIndicator.classList.add('hidden');
+                        };
+                    }
+                }
+            });
+        }
+        
+        if (isOwn) {
+            const editBtn = msgEl.querySelector('.edit-btn');
+            if (editBtn) {
+                editBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    editingMessageId = msg.id;
+                    handleEditMessage();
+                });
+            }
+        } else {
+            const deleteBtn = msgEl.querySelector('.delete-btn');
+            if (deleteBtn) {
+                deleteBtn.addEventListener('click', async (e) => {
+                    e.stopPropagation();
+                    if (confirm('Are you sure you want to delete this message?')) {
+                        await handleDeleteMessage(msg.id);
+                    }
+                });
+            }
+        }
+        
         container.appendChild(msgEl);
+        
+        // Initialize audio player if this is an audio message
+        if (msg.message_type === 'audio' && msg.attachment) {
+            const audioId = msgEl.dataset.audioId || (msg.id ? `audio_${msg.id}` : `audio_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`);
+            setTimeout(() => {
+                initializeAudioPlayer(audioId, `/uploads/${msg.attachment}`);
+            }, 100);
+        }
     });
     
     container.scrollTop = container.scrollHeight;
+}
+
+// Scroll to a specific message by ID
+function scrollToMessage(messageId) {
+    const container = document.getElementById('chatMessages');
+    if (!container) return;
+    
+    const messageEl = container.querySelector(`[data-message-id="${messageId}"]`);
+    if (!messageEl) {
+        console.warn('Message not found:', messageId);
+        // Optionally, reload chat history and try again if message not found
+        // This might be for older messages not currently loaded
+        loadChatHistory(currentChatUserId).then(() => {
+            const newMessageEl = container.querySelector(`[data-message-id="${messageId}"]`);
+            if (newMessageEl) {
+                scrollToMessage(messageId); // Recursive call after loading
+            }
+        });
+        return;
+    }
+    
+    // Remove previous highlights
+    container.querySelectorAll('.message-item.highlighted').forEach(el => {
+        el.classList.remove('highlighted');
+    });
+    
+    // Add highlight class
+    messageEl.classList.add('highlighted');
+    
+    // Calculate scroll position to center the message
+    const containerRect = container.getBoundingClientRect();
+    const messageRect = messageEl.getBoundingClientRect();
+    const scrollTop = container.scrollTop;
+    const messageTop = messageRect.top - containerRect.top + scrollTop;
+    const containerHeight = container.clientHeight;
+    const messageHeight = messageEl.offsetHeight;
+    
+    const targetScrollTop = messageTop - (containerHeight / 2) + (messageHeight / 2);
+    
+    // Smooth scroll to message
+    container.scrollTo({
+        top: Math.max(0, targetScrollTop),
+        behavior: 'smooth'
+    });
+    
+    // Remove highlight after 2 seconds
+    setTimeout(() => {
+        messageEl.classList.remove('highlighted');
+    }, 2000);
 }
 
 function getReactionEmoji(type) {
@@ -3218,6 +3689,25 @@ async function sendMessage() {
     input.value = '';
     removeMediaPreview();
     
+    // Store reply info before clearing
+    const replyToMessageId = pendingReply ? pendingReply.id : null;
+    const replyToData = pendingReply ? {
+        id: pendingReply.id,
+        content: pendingReply.content,
+        sender: pendingReply.sender,
+        message_type: pendingReply.message_type,
+        attachment: pendingReply.attachment
+    } : null;
+    
+    // Clear reply preview if exists
+    if (pendingReply) {
+        pendingReply = null;
+        const replyIndicator = document.getElementById('replyIndicator');
+        if (replyIndicator) {
+            replyIndicator.classList.add('hidden');
+        }
+    }
+    
     // Create temporary message ID for optimistic update
     const tempMessageId = `temp_${Date.now()}_${++messageIdCounter}`;
     
@@ -3231,6 +3721,8 @@ async function sendMessage() {
         message_type: messageMessageType,
         location_lat: messageLocationLat,
         location_lng: messageLocationLng,
+        reply_to_message_id: replyToMessageId,
+        reply_to: replyToData,
         sender: {
             id: currentUser.id,
             username: currentUser.username,
@@ -3263,6 +3755,7 @@ async function sendMessage() {
                 message_type: messageMessageType,
                 location_lat: messageLocationLat,
                 location_lng: messageLocationLng,
+                reply_to_message_id: replyToMessageId,
                 temp_id: tempMessageId // Send temp ID to match later
             }));
         } catch (error) {
@@ -3279,6 +3772,183 @@ async function sendMessage() {
         showError('profileMessage', 'Connection lost. Please refresh the page.');
         // Restore input
         input.value = messageContent;
+    }
+}
+
+// Voice message recording functions
+async function startVoiceRecording() {
+    if (isVoiceRecording) return;
+    
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        voiceMediaRecorder = new MediaRecorder(stream);
+        voiceAudioChunks = [];
+        isVoiceRecording = true;
+        voiceRecordingStartTime = Date.now();
+        
+        voiceMediaRecorder.ondataavailable = (event) => {
+            if (event.data.size > 0) {
+                voiceAudioChunks.push(event.data);
+            }
+        };
+        
+        voiceMediaRecorder.onstop = () => {
+            handleVoiceRecordingComplete();
+            stream.getTracks().forEach(track => track.stop());
+        };
+        
+        voiceMediaRecorder.start();
+        // Recording indicator removed - not needed
+    } catch (error) {
+        console.error('Error starting voice recording:', error);
+        alert('Failed to access microphone. Please check permissions.');
+        isVoiceRecording = false;
+    }
+}
+
+function stopVoiceRecording() {
+    if (!isVoiceRecording || !voiceMediaRecorder) return;
+    
+    if (voiceMediaRecorder.state === 'recording') {
+        voiceMediaRecorder.stop();
+    }
+    
+    isVoiceRecording = false;
+    // Recording indicator removed - not needed
+}
+
+// Voice recording UI functions removed - indicator dialog not needed
+
+async function handleVoiceRecordingComplete() {
+    if (voiceAudioChunks.length === 0) {
+        console.warn('No audio data recorded');
+        return;
+    }
+    
+    const audioBlob = new Blob(voiceAudioChunks, { type: 'audio/webm' });
+    const minDuration = 500; // Minimum 500ms
+    const maxDuration = 60000; // Maximum 60 seconds
+    
+    // Check duration
+    const audio = new Audio(URL.createObjectURL(audioBlob));
+    audio.onloadedmetadata = async () => {
+        const duration = audio.duration * 1000; // Convert to milliseconds
+        
+        if (duration < minDuration) {
+            alert('Recording too short. Please record at least 0.5 seconds.');
+            URL.revokeObjectURL(audio.src);
+            return;
+        }
+        
+        if (duration > maxDuration) {
+            alert('Recording too long. Maximum 60 seconds.');
+            URL.revokeObjectURL(audio.src);
+            return;
+        }
+        
+        // Create file from blob
+        const audioFile = new File([audioBlob], `voice_${Date.now()}.webm`, { type: 'audio/webm' });
+        await sendVoiceMessage(audioFile);
+        
+        URL.revokeObjectURL(audio.src);
+    };
+    
+    audio.onerror = () => {
+        console.error('Error loading audio metadata');
+        alert('Error processing recording. Please try again.');
+    };
+}
+
+async function sendVoiceMessage(audioFile) {
+    if (!currentChatUserId) {
+        alert('Please select a chat first');
+        return;
+    }
+    
+    try {
+        // Upload audio file
+        const formData = new FormData();
+        formData.append('file', audioFile);
+        formData.append('message_type', 'audio');
+        
+        const uploadResponse = await fetch(`${API_BASE}/messages/upload`, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${accessToken}` },
+            body: formData
+        });
+        
+        if (!uploadResponse.ok) {
+            const errorData = await uploadResponse.json().catch(() => ({ detail: 'Failed to upload voice message' }));
+            console.error('Upload error:', errorData);
+            alert(errorData.detail || 'Failed to upload voice message');
+            return;
+        }
+        
+        const uploadData = await uploadResponse.json();
+        const attachment = uploadData.filename;
+        
+        // Create temporary message ID for optimistic update
+        // Use the same temp_id for both data-message-id and temp_id matching
+        const tempId = `voice_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        
+        // Create optimistic message
+        const optimisticMessage = {
+            id: tempId, // Use tempId as id so data-message-id matches
+            sender_id: currentUser.id,
+            from: currentUser.id,
+            content: null,
+            attachment: attachment,
+            message_type: 'audio',
+            reply_to_message_id: pendingReply ? pendingReply.id : null,
+            reply_to: pendingReply ? {
+                id: pendingReply.id,
+                content: pendingReply.content,
+                sender: pendingReply.sender,
+                message_type: pendingReply.message_type,
+                attachment: pendingReply.attachment
+            } : null,
+            isOptimistic: true,
+            temp_id: tempId,
+            created_at: new Date().toISOString()
+        };
+        
+        // Add optimistic message to UI
+        addMessageToChat(optimisticMessage);
+        
+        // Store pending message
+        pendingMessages.set(tempId, {
+            message: optimisticMessage,
+            timestamp: Date.now()
+        });
+        
+        // Send via WebSocket
+        if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+            wsConnection.send(JSON.stringify({
+                type: 'message',
+                to: currentChatUserId,
+                content: null,
+                attachment: attachment,
+                message_type: 'audio',
+                reply_to_message_id: optimisticMessage.reply_to_message_id,
+                reply_to: optimisticMessage.reply_to,
+                temp_id: tempId
+            }));
+        } else {
+            removeOptimisticMessage(tempId);
+            alert('Connection lost. Please refresh the page.');
+        }
+        
+        // Clear reply if exists
+        if (pendingReply) {
+            pendingReply = null;
+            const replyIndicator = document.getElementById('replyIndicator');
+            if (replyIndicator) {
+                replyIndicator.classList.add('hidden');
+            }
+        }
+    } catch (error) {
+        console.error('Error sending voice message:', error);
+        alert('Failed to send voice message. Please try again.');
     }
 }
 
@@ -3299,10 +3969,35 @@ function replaceOptimisticMessage(tempId, realMessage) {
     const container = document.getElementById('chatMessages');
     if (!container) return;
     
-    const msgEl = container.querySelector(`[data-message-id="${tempId}"]`);
+    // Try to find message by tempId (in data-message-id) or by temp_id attribute
+    let msgEl = container.querySelector(`[data-message-id="${tempId}"]`);
+    if (!msgEl) {
+        // Try to find by temp_id data attribute
+        msgEl = container.querySelector(`[data-temp-id="${tempId}"]`);
+    }
+    if (!msgEl) {
+        // Try to find by looking through all message items for matching temp_id in pendingMessages
+        const allMessages = container.querySelectorAll('.message-item');
+        for (const el of allMessages) {
+            const msgId = el.dataset.messageId;
+            if (msgId && pendingMessages.has(msgId)) {
+                const pending = pendingMessages.get(msgId);
+                if (pending && pending.message && pending.message.temp_id === tempId) {
+                    msgEl = el;
+                    break;
+                }
+            }
+        }
+    }
+    
     if (msgEl) {
         // Remove old message
         msgEl.remove();
+    }
+    
+    // Skip deleted messages completely
+    if (realMessage.is_deleted) {
+        return;
     }
     
     // Add real message (skip duplicate check since we're replacing)
@@ -3336,27 +4031,127 @@ function replaceOptimisticMessage(tempId, realMessage) {
                     </div>
                 </div>
             `;
+        } else if (realMessage.message_type === 'audio' && realMessage.attachment) {
+            // Generate unique audioId - use message ID if available, otherwise use timestamp + random
+            const audioId = realMessage.id ? `audio_${realMessage.id}` : `audio_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            messageContent = `
+                <div class="message-audio" data-audio-id="${audioId}">
+                    <div class="audio-player-custom">
+                        <button class="audio-play-btn" data-audio-id="${audioId}">
+                            <i class="fas fa-play"></i>
+                        </button>
+                        <div class="audio-waveform-container">
+                            <div class="audio-waveform" data-audio-id="${audioId}">
+                                <div class="waveform-bars"></div>
+                                <div class="waveform-progress"></div>
+                            </div>
+                            <div class="audio-info">
+                                <span class="audio-current-time" data-audio-id="${audioId}">00:00</span>
+                                <span class="audio-separator"> / </span>
+                                <span class="audio-duration" data-audio-id="${audioId}">00:00</span>
+                                <span class="audio-size" data-audio-id="${audioId}">, --</span>
+                            </div>
+                        </div>
+                        <audio class="audio-element" data-audio-id="${audioId}" preload="metadata">
+                            <source src="/uploads/${realMessage.attachment}" type="audio/webm">
+                            <source src="/uploads/${realMessage.attachment}" type="audio/mp4">
+                            <source src="/uploads/${realMessage.attachment}" type="audio/ogg">
+                        </audio>
+                    </div>
+                </div>
+            `;
+            // Store audioId in newMsgEl for later initialization
+            if (!newMsgEl.dataset.audioId) {
+                newMsgEl.dataset.audioId = audioId;
+            }
         }
         
         if (realMessage.content) {
             messageContent += `<div class="message-text">${escapeHtml(realMessage.content)}</div>`;
         }
         
-        const sender = realMessage.sender || currentUser;
-        const senderAvatar = sender.profile_pic ? `/uploads/${sender.profile_pic}` : '/static/default-avatar.png';
-        const currentUserAvatar = currentUser.profile_pic ? `/uploads/${currentUser.profile_pic}` : '/static/default-avatar.png';
-        
-        newMsgEl.innerHTML = `
-            <img src="${isOwn ? currentUserAvatar : senderAvatar}" 
-                 alt="Avatar" class="avatar-small">
-            <div class="message-bubble">
-                ${messageContent}
-                <div class="message-time">
-                    ${formatTime(realMessage.timestamp || realMessage.created_at || new Date().toISOString())}
+        // Reply indicator display (above message content)
+        let replyContextHtml = '';
+        if (realMessage.reply_to || realMessage.reply_to_message_id) {
+            const replyTo = realMessage.reply_to || {};
+            const replyToMessageId = realMessage.reply_to_message_id || replyTo.id || null;
+            const replySenderName = replyTo.sender?.username || replyTo.sender?.first_name || 'Unknown';
+            
+            // Reply context inside message bubble
+            let replyPreview = '';
+            if (replyTo.message_type === 'image') {
+                replyPreview = '<i class="fas fa-image"></i> Image';
+            } else if (replyTo.message_type === 'video') {
+                replyPreview = '<i class="fas fa-video"></i> Video';
+            } else if (replyTo.message_type === 'location') {
+                replyPreview = '<i class="fas fa-map-marker-alt"></i> Location';
+            } else if (replyTo.message_type === 'audio') {
+                replyPreview = '<i class="fas fa-microphone"></i> Voice Message';
+            } else {
+                replyPreview = escapeHtml((replyTo.content || '').substring(0, 50)) + (replyTo.content && replyTo.content.length > 50 ? '...' : '');
+            }
+            
+            replyContextHtml = `
+                <div class="message-reply-context" data-reply-to-id="${replyToMessageId || ''}" style="cursor: pointer;">
+                    <div class="message-reply-indicator"></div>
+                    <div class="message-reply-content">
+                        <div class="message-reply-sender">${escapeHtml(replySenderName)}</div>
+                        <div class="message-reply-text">${replyPreview}</div>
+                    </div>
                 </div>
-                ${isOwn ? '<button class="message-menu-btn" onclick="showMessageMenu(event, ' + realMessage.id + ')"><i class="fas fa-ellipsis-v"></i></button>' : ''}
+            `;
+        }
+        
+        const sender = realMessage.sender || currentUser;
+        const senderAvatar = getAvatarPath(sender.profile_pic);
+        const currentUserAvatar = getAvatarPath(currentUser.profile_pic);
+        
+        // Action buttons HTML
+        const actionButtonsHtml = `
+            <div class="message-actions-top">
+                <button class="message-action-btn react-btn" data-message-id="${realMessage.id}" title="React">
+                    <i class="far fa-smile"></i>
+                </button>
+                <button class="message-action-btn reply-btn" data-message-id="${realMessage.id}" title="Reply">
+                    <i class="fas fa-reply"></i>
+                </button>
+                ${isOwn 
+                    ? `<button class="message-action-btn edit-btn" data-message-id="${realMessage.id}" title="Edit">
+                        <i class="fas fa-edit"></i>
+                       </button>`
+                    : `<button class="message-action-btn delete-btn" data-message-id="${realMessage.id}" title="Delete">
+                        <i class="fas fa-trash"></i>
+                       </button>`
+                }
             </div>
         `;
+        
+        // For own messages: actions first, then message bubble, then avatar
+        // For others' messages: avatar first, then message bubble, then actions
+        newMsgEl.innerHTML = isOwn
+            ? `${actionButtonsHtml}
+               <div class="message-bubble">
+                   ${replyContextHtml}
+                   ${messageContent}
+                   <div class="message-time">
+                       ${formatTime(realMessage.timestamp || realMessage.created_at || new Date().toISOString())}
+                       ${realMessage.edited_at ? '<span class="edited-badge">(edited)</span>' : ''}
+                   </div>
+                   ${isOwn ? getReadStatusHtml(realMessage) : ''}
+               </div>
+               <img src="${currentUserAvatar}" 
+                    alt="Avatar" class="avatar-small">`
+            : `<img src="${senderAvatar}" 
+                    alt="Avatar" class="avatar-small">
+               <div class="message-bubble">
+                   ${replyContextHtml}
+                   ${messageContent}
+                   <div class="message-time">
+                       ${formatTime(realMessage.timestamp || realMessage.created_at || new Date().toISOString())}
+                       ${realMessage.edited_at ? '<span class="edited-badge">(edited)</span>' : ''}
+                   </div>
+               </div>
+               ${actionButtonsHtml}`;
         
         if (isOwn) {
             newMsgEl.addEventListener('contextmenu', (e) => {
@@ -3366,6 +4161,15 @@ function replaceOptimisticMessage(tempId, realMessage) {
         }
         
         container.appendChild(newMsgEl);
+        
+        // Initialize audio player if this is an audio message
+        if (realMessage.message_type === 'audio' && realMessage.attachment) {
+            const audioId = newMsgEl.dataset.audioId || (realMessage.id ? `audio_${realMessage.id}` : `audio_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`);
+            setTimeout(() => {
+                initializeAudioPlayer(audioId, `/uploads/${realMessage.attachment}`);
+            }, 100);
+        }
+        
         container.scrollTop = container.scrollHeight;
     }
     
@@ -4024,10 +4828,9 @@ function handleWebSocketMessage(data) {
             handleMessageEdited(data);
         }
     } else if (data.type === 'message_deleted') {
-        // Handle message delete - only if it's for current chat
-        if (shouldShowMessageDelete(data)) {
-            handleMessageDeleted(data);
-        }
+        // Handle message delete - always handle it, regardless of current chat
+        // This ensures deleted messages are removed from both sender and receiver views
+        handleMessageDeleted(data);
     } else if (data.type === 'call_request') {
         // Handle incoming call request (new protocol)
         handleCallRequest(data);
@@ -4060,6 +4863,13 @@ function handleWebSocketMessage(data) {
             window.incomingCallData = null;
             window.incomingCallType = null;
         }
+    } else if (data.type === 'messages_read') {
+        // Handle read status update for own messages
+        console.log('📥 Received messages_read via WebSocket:', data);
+        handleMessagesRead(data);
+    } else if (data.type === 'typing') {
+        // Handle typing indicator
+        handleTypingIndicator(data);
     }
 }
 
@@ -4203,39 +5013,114 @@ function handleMessageEdited(data) {
 }
 
 // Handle message deleted from WebSocket
+// Handle read status update for own messages
+function handleMessagesRead(data) {
+    if (!currentUser || !currentUser.id) return;
+    
+    const messageIds = data.message_ids || [];
+    const readAt = data.read_at;
+    const container = document.getElementById('chatMessages');
+    
+    if (!container || !messageIds.length) return;
+    
+    // Update read status for each message (Read Receipt)
+    messageIds.forEach(messageId => {
+        const messageEl = container.querySelector(`[data-message-id="${messageId}"]`);
+        if (messageEl) {
+            const isOwn = messageEl.classList.contains('own');
+            
+            if (isOwn) {
+                // Update read status in message bubble
+                const messageBubble = messageEl.querySelector('.message-bubble');
+                if (messageBubble) {
+                    // Remove existing read status if any
+                    const existingReadStatus = messageBubble.querySelector('.read-status');
+                    if (existingReadStatus) {
+                        existingReadStatus.remove();
+                    }
+                    
+                    // Add new read status with correct read_at timestamp
+                    const readStatusHtml = getReadStatusHtml({ 
+                        is_read: true, 
+                        read_at: readAt,
+                        sender_id: currentUser.id,
+                        receiver_id: data.reader_id
+                    });
+                    if (readStatusHtml) {
+                        messageBubble.insertAdjacentHTML('beforeend', readStatusHtml);
+                    }
+                }
+            }
+        }
+    });
+}
+
+// Handle typing indicator from WebSocket
+let typingIndicatorTimeout;
+function handleTypingIndicator(data) {
+    if (!currentChatUserId || !currentUser) return;
+    
+    const senderId = data.from;
+    
+    // Only show typing indicator if it's from the current chat user
+    if (senderId !== currentChatUserId) {
+        return;
+    }
+    
+    const typingIndicator = document.getElementById('typingIndicator');
+    const typingUser = document.getElementById('typingUser');
+    
+    if (!typingIndicator || !typingUser) return;
+    
+    // Get sender info from conversations or load it
+    const conversations = document.querySelectorAll('.conversation-item');
+    let senderName = 'Someone';
+    for (const conv of conversations) {
+        const userId = parseInt(conv.dataset.userId);
+        if (userId === senderId) {
+            const nameEl = conv.querySelector('.conversation-name');
+            if (nameEl) {
+                senderName = nameEl.textContent.trim();
+            }
+            break;
+        }
+    }
+    
+    typingUser.textContent = senderName;
+    typingIndicator.classList.remove('hidden');
+    
+    // Hide typing indicator after 3 seconds
+    clearTimeout(typingIndicatorTimeout);
+    typingIndicatorTimeout = setTimeout(() => {
+        typingIndicator.classList.add('hidden');
+    }, 3000);
+}
+
 function handleMessageDeleted(data) {
     const messageId = data.message_id;
+    const senderId = data.sender_id || data.from;
     
     if (!messageId) return;
     
     const container = document.getElementById('chatMessages');
     if (!container) return;
     
-    const messageEl = container.querySelector(`[data-message-id="${messageId}"]`);
-    if (!messageEl) return;
+    // Check if this deleted message is for the current chat
+    const isCurrentChat = currentChatUserId && (
+        // Message from current chat user
+        (senderId === currentChatUserId) ||
+        // Our own message to current chat user
+        (senderId === currentUser.id && currentChatUserId)
+    );
     
-    // Replace message content with deleted message
-    const messageBubble = messageEl.querySelector('.message-bubble');
-    if (messageBubble) {
-        messageBubble.className = 'message-bubble deleted-message';
-        messageBubble.innerHTML = '<i class="fas fa-trash"></i> This message was deleted';
-        
-        // Remove menu button if exists
-        const menuBtn = messageBubble.querySelector('.message-menu-btn');
-        if (menuBtn) {
-            menuBtn.remove();
-        }
-        
-        // Remove reactions if exists
-        const reactionsEl = messageBubble.querySelector('.message-reactions');
-        if (reactionsEl) {
-            reactionsEl.remove();
-        }
-        
-        // Update time
-        const messageTime = messageBubble.querySelector('.message-time');
-        if (messageTime) {
-            messageTime.innerHTML = formatTime(new Date().toISOString());
+    if (isCurrentChat) {
+        // Remove the message element from current chat
+        const messageEl = container.querySelector(`[data-message-id="${messageId}"]`);
+        if (messageEl) {
+            messageEl.remove();
+        } else {
+            // If message not found in DOM, reload chat history to ensure sync
+            loadChatHistory(currentChatUserId);
         }
     }
     
@@ -4269,6 +5154,11 @@ function addMessageToChat(msg) {
         return;
     }
     
+    // Skip deleted messages completely
+    if (msg.is_deleted) {
+        return;
+    }
+    
     // Get chat messages container
     const container = document.getElementById('chatMessages');
     if (!container) return;
@@ -4297,11 +5187,14 @@ function addMessageToChat(msg) {
         // Fallback: Check if we have a pending optimistic message by content and timing
         for (const [tempId, pending] of pendingMessages.entries()) {
             const pendingMsg = pending.message;
-            // Match by content and timing (within 5 seconds)
-            if (pendingMsg.content === msg.content && 
-                pendingMsg.attachment === msg.attachment &&
-                pendingMsg.message_type === msg.message_type &&
-                Date.now() - pending.timestamp < 5000) {
+            // Match by attachment and message_type (for voice messages, content is null)
+            const attachmentMatch = pendingMsg.attachment === msg.attachment;
+            const typeMatch = pendingMsg.message_type === msg.message_type;
+            const contentMatch = pendingMsg.content === msg.content || 
+                                (!pendingMsg.content && !msg.content);
+            const timingMatch = Date.now() - pending.timestamp < 5000;
+            
+            if (attachmentMatch && typeMatch && contentMatch && timingMatch) {
                 replaceOptimisticMessage(tempId, msg);
                 return;
             }
@@ -4313,6 +5206,10 @@ function addMessageToChat(msg) {
         const msgEl = document.createElement('div');
         msgEl.className = `message-item ${isOwn ? 'own' : ''}`;
         msgEl.dataset.messageId = msg.id;
+        // Also store temp_id if available for matching optimistic messages
+        if (msg.temp_id) {
+            msgEl.dataset.tempId = msg.temp_id;
+        }
         
         let messageContent = '';
         if (msg.message_type === 'image' && msg.attachment) {
@@ -4336,27 +5233,126 @@ function addMessageToChat(msg) {
                     </div>
                 </div>
             `;
+        } else if (msg.message_type === 'audio' && msg.attachment) {
+            // Generate unique audioId - use message ID if available, otherwise use timestamp + random
+            const audioId = msg.id ? `audio_${msg.id}` : `audio_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            messageContent = `
+                <div class="message-audio" data-audio-id="${audioId}">
+                    <div class="audio-player-custom">
+                        <button class="audio-play-btn" data-audio-id="${audioId}">
+                            <i class="fas fa-play"></i>
+                        </button>
+                        <div class="audio-waveform-container">
+                            <div class="audio-waveform" data-audio-id="${audioId}">
+                                <div class="waveform-bars"></div>
+                                <div class="waveform-progress"></div>
+                            </div>
+                            <div class="audio-info">
+                                <span class="audio-current-time" data-audio-id="${audioId}">00:00</span>
+                                <span class="audio-separator"> / </span>
+                                <span class="audio-duration" data-audio-id="${audioId}">00:00</span>
+                                <span class="audio-size" data-audio-id="${audioId}">, --</span>
+                            </div>
+                        </div>
+                        <audio class="audio-element" data-audio-id="${audioId}" preload="metadata">
+                            <source src="/uploads/${msg.attachment}" type="audio/webm">
+                            <source src="/uploads/${msg.attachment}" type="audio/mp4">
+                            <source src="/uploads/${msg.attachment}" type="audio/ogg">
+                        </audio>
+                    </div>
+                </div>
+            `;
+            // Store audioId in msgEl for later initialization
+            if (!msgEl.dataset.audioId) {
+                msgEl.dataset.audioId = audioId;
+            }
         }
         
         if (msg.content) {
             messageContent += `<div class="message-text">${escapeHtml(msg.content)}</div>`;
         }
         
-        const sender = msg.sender || currentUser;
-        const senderAvatar = sender.profile_pic ? `/uploads/${sender.profile_pic}` : '/static/default-avatar.png';
-        const currentUserAvatar = currentUser.profile_pic ? `/uploads/${currentUser.profile_pic}` : '/static/default-avatar.png';
-        
-        msgEl.innerHTML = `
-            <img src="${isOwn ? currentUserAvatar : senderAvatar}" 
-                 alt="Avatar" class="avatar-small">
-            <div class="message-bubble">
-                ${messageContent}
-                <div class="message-time">
-                    ${formatTime(msg.timestamp || msg.created_at || new Date().toISOString())}
+        // Reply indicator display (above message content)
+        let replyContextHtml = '';
+        if (msg.reply_to || msg.reply_to_message_id) {
+            const replyTo = msg.reply_to || {};
+            const replyToMessageId = msg.reply_to_message_id || replyTo.id || null;
+            const replySenderName = replyTo.sender?.username || replyTo.sender?.first_name || 'Unknown';
+            
+            // Reply context inside message bubble
+            let replyPreview = '';
+            if (replyTo.message_type === 'image') {
+                replyPreview = '<i class="fas fa-image"></i> Image';
+            } else if (replyTo.message_type === 'video') {
+                replyPreview = '<i class="fas fa-video"></i> Video';
+            } else if (replyTo.message_type === 'location') {
+                replyPreview = '<i class="fas fa-map-marker-alt"></i> Location';
+            } else if (replyTo.message_type === 'audio') {
+                replyPreview = '<i class="fas fa-microphone"></i> Voice Message';
+            } else {
+                replyPreview = escapeHtml((replyTo.content || '').substring(0, 50)) + (replyTo.content && replyTo.content.length > 50 ? '...' : '');
+            }
+            
+            replyContextHtml = `
+                <div class="message-reply-context" data-reply-to-id="${replyToMessageId || ''}" style="cursor: pointer;">
+                    <div class="message-reply-indicator"></div>
+                    <div class="message-reply-content">
+                        <div class="message-reply-sender">${escapeHtml(replySenderName)}</div>
+                        <div class="message-reply-text">${replyPreview}</div>
+                    </div>
                 </div>
-                ${isOwn ? '<button class="message-menu-btn" onclick="showMessageMenu(event, ' + msg.id + ')"><i class="fas fa-ellipsis-v"></i></button>' : ''}
+            `;
+        }
+        
+        const sender = msg.sender || currentUser;
+        const senderAvatar = getAvatarPath(sender.profile_pic);
+        const currentUserAvatar = getAvatarPath(currentUser.profile_pic);
+        
+        // Action buttons HTML
+        const actionButtonsHtml = `
+            <div class="message-actions-top">
+                <button class="message-action-btn react-btn" data-message-id="${msg.id}" title="React">
+                    <i class="far fa-smile"></i>
+                </button>
+                <button class="message-action-btn reply-btn" data-message-id="${msg.id}" title="Reply">
+                    <i class="fas fa-reply"></i>
+                </button>
+                ${isOwn 
+                    ? `<button class="message-action-btn edit-btn" data-message-id="${msg.id}" title="Edit">
+                        <i class="fas fa-edit"></i>
+                       </button>`
+                    : `<button class="message-action-btn delete-btn" data-message-id="${msg.id}" title="Delete">
+                        <i class="fas fa-trash"></i>
+                       </button>`
+                }
             </div>
         `;
+        
+        // For own messages: actions first, then message bubble, then avatar
+        // For others' messages: avatar first, then message bubble, then actions
+        msgEl.innerHTML = isOwn
+            ? `${actionButtonsHtml}
+               <div class="message-bubble">
+                   ${replyContextHtml}
+                   ${messageContent}
+                   <div class="message-time">
+                       ${msg.isOptimistic ? '<span class="sending-indicator">Sending...</span>' : formatTime(msg.timestamp || msg.created_at || new Date().toISOString())}
+                       ${msg.edited_at ? '<span class="edited-badge">(edited)</span>' : ''}
+                   </div>
+               </div>
+               <img src="${currentUserAvatar}" 
+                    alt="Avatar" class="avatar-small">`
+            : `<img src="${senderAvatar}" 
+                    alt="Avatar" class="avatar-small">
+               <div class="message-bubble">
+                   ${replyContextHtml}
+                   ${messageContent}
+                   <div class="message-time">
+                       ${msg.isOptimistic ? '<span class="sending-indicator">Sending...</span>' : formatTime(msg.timestamp || msg.created_at || new Date().toISOString())}
+                       ${msg.edited_at ? '<span class="edited-badge">(edited)</span>' : ''}
+                   </div>
+               </div>
+               ${actionButtonsHtml}`;
         
         if (isOwn) {
             msgEl.addEventListener('contextmenu', (e) => {
@@ -4365,7 +5361,102 @@ function addMessageToChat(msg) {
             });
         }
         
+        // Add click listener to reply context to scroll to original message
+        const replyContext = msgEl.querySelector('.message-reply-context');
+        if (replyContext) {
+            replyContext.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const replyToId = replyContext.dataset.replyToId;
+                if (replyToId) {
+                    scrollToMessage(replyToId);
+                }
+            });
+        }
+        
+        // Add event listeners for action buttons
+        const reactBtn = msgEl.querySelector('.react-btn');
+        if (reactBtn) {
+            reactBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                reactingMessageId = msg.id;
+                const rect = msgEl.getBoundingClientRect();
+                showReactionPickerAt(rect.left + rect.width / 2, rect.top - 60);
+            });
+        }
+        
+        const replyBtn = msgEl.querySelector('.reply-btn');
+        if (replyBtn) {
+            replyBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                // Set pending reply
+                pendingReply = {
+                    id: msg.id,
+                    content: msg.content || '',
+                    sender: msg.sender || { username: 'Unknown', first_name: 'Unknown' },
+                    message_type: msg.message_type || 'text',
+                    attachment: msg.attachment || null
+                };
+                // Show reply preview using replyIndicator
+                const replyIndicator = document.getElementById('replyIndicator');
+                const replyIndicatorLabel = replyIndicator?.querySelector('.reply-indicator-label');
+                const replyIndicatorMessage = document.getElementById('replyIndicatorMessage');
+                const cancelReplyBtn = document.getElementById('cancelReplyBtn');
+                
+                if (replyIndicator && replyIndicatorLabel && replyIndicatorMessage) {
+                    const senderName = pendingReply.sender?.first_name || pendingReply.sender?.username || 'Unknown';
+                    let previewText = pendingReply.content || '';
+                    if (pendingReply.message_type === 'image') previewText = '📷 Image';
+                    else if (pendingReply.message_type === 'video') previewText = '🎥 Video';
+                    else if (pendingReply.message_type === 'audio') previewText = '🎤 Voice Message';
+                    else if (pendingReply.message_type === 'location') previewText = '📍 Location';
+                    
+                    replyIndicatorLabel.textContent = `Replying to ${senderName}`;
+                    replyIndicatorMessage.textContent = previewText.substring(0, 50) + (previewText.length > 50 ? '...' : '');
+                    replyIndicator.classList.remove('hidden');
+                    
+                    // Add cancel button listener
+                    if (cancelReplyBtn) {
+                        cancelReplyBtn.onclick = () => {
+                            pendingReply = null;
+                            replyIndicator.classList.add('hidden');
+                        };
+                    }
+                }
+            });
+        }
+        
+        if (isOwn) {
+            const editBtn = msgEl.querySelector('.edit-btn');
+            if (editBtn) {
+                editBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    editingMessageId = msg.id;
+                    handleEditMessage();
+                });
+            }
+        } else {
+            const deleteBtn = msgEl.querySelector('.delete-btn');
+            if (deleteBtn) {
+                deleteBtn.addEventListener('click', async (e) => {
+                    e.stopPropagation();
+                    if (confirm('Are you sure you want to delete this message?')) {
+                        await handleDeleteMessage(msg.id);
+                    }
+                });
+            }
+        }
+        
         container.appendChild(msgEl);
+        
+        // Initialize audio player if this is an audio message
+        if (msg.message_type === 'audio' && msg.attachment) {
+            const audioId = msgEl.dataset.audioId || (msg.id ? `audio_${msg.id}` : `audio_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`);
+            setTimeout(() => {
+                initializeAudioPlayer(audioId, `/uploads/${msg.attachment}`);
+            }, 100);
+        }
+        
         container.scrollTop = container.scrollHeight;
     }
     
@@ -6408,9 +7499,118 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+// Utility function to get correct avatar path
+function getAvatarPath(pic) {
+    if (!pic) return '/static/default-avatar.png';
+    // If pic already starts with /uploads/ or uploads/, return as is (with leading slash)
+    if (pic.startsWith('/uploads/') || pic.startsWith('uploads/')) {
+        return pic.startsWith('/') ? pic : `/${pic}`;
+    }
+    // Otherwise, prepend /uploads/
+    return `/uploads/${pic}`;
+}
+
 function formatTime(dateString) {
     const date = new Date(dateString);
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+// Format time ago (e.g., "2 minutes ago", "1 hour ago", "2 days ago")
+function formatTimeAgo(dateString) {
+    if (!dateString) return '';
+    
+    try {
+        // Parse the date string - handle both ISO format and other formats
+        const date = new Date(dateString);
+        const now = new Date();
+        
+        // Check if date is valid
+        if (isNaN(date.getTime())) {
+            console.error('Invalid date string:', dateString);
+            return '';
+        }
+        
+        // Calculate difference in milliseconds
+        const diffMs = now.getTime() - date.getTime();
+        
+        // If negative (future date) or very small difference, return 'just now'
+        if (diffMs < 0) {
+            return 'just now';
+        }
+        
+        // Calculate time differences
+        const diffSeconds = Math.floor(diffMs / 1000);
+        const diffMinutes = Math.floor(diffSeconds / 60);
+        const diffHours = Math.floor(diffMinutes / 60);
+        const diffDays = Math.floor(diffHours / 24);
+        
+        // Return appropriate time ago string
+        if (diffSeconds < 60) {
+            return 'just now';
+        } else if (diffMinutes < 60) {
+            return `${diffMinutes} ${diffMinutes === 1 ? 'minute' : 'minutes'} ago`;
+        } else if (diffHours < 24) {
+            return `${diffHours} ${diffHours === 1 ? 'hour' : 'hours'} ago`;
+        } else if (diffDays < 7) {
+            return `${diffDays} ${diffDays === 1 ? 'day' : 'days'} ago`;
+        } else {
+            // For older than 7 days, show date in local format
+            const options = { month: 'short', day: 'numeric', year: date.getFullYear() !== now.getFullYear() ? 'numeric' : undefined };
+            return date.toLocaleDateString(undefined, options);
+        }
+    } catch (e) {
+        console.error('Error in formatTimeAgo:', e, dateString);
+        return '';
+    }
+}
+
+// Get read status display for own messages (Read Receipt)
+function getReadStatusHtml(msg) {
+    // Check if msg exists and has required properties
+    if (!msg) {
+        return '';
+    }
+    
+    // Only show read receipt for own messages
+    const isOwn = msg.sender_id === currentUser?.id;
+    if (!isOwn) {
+        return '';
+    }
+    
+    // Check if message is read
+    if (!msg.is_read) {
+        return ''; // Not read yet, show nothing
+    }
+    
+    // If read_at is available, show time ago
+    if (msg.read_at) {
+        try {
+            const timeAgo = formatTimeAgo(msg.read_at);
+            if (timeAgo && timeAgo.trim() !== '') {
+                return `<span class="read-status">Seen ${timeAgo}</span>`;
+            } else {
+                // If formatTimeAgo returned empty, show just "Seen"
+                return '<span class="read-status">Seen</span>';
+            }
+        } catch (e) {
+            console.error('Error formatting read_at:', e);
+            return '<span class="read-status">Seen</span>';
+        }
+    } else {
+        // Fallback if read_at is not available but is_read is true
+        return '<span class="read-status">Seen</span>';
+    }
+}
+
+// Utility function to get correct avatar path
+function getAvatarPath(pic) {
+    if (!pic) return '/static/default-avatar.png';
+    // If pic already starts with /uploads/ or uploads/, return as is (with leading slash)
+    if (pic.startsWith('/uploads/') || pic.startsWith('uploads/')) {
+        return pic.startsWith('/') ? pic : `/${pic}`;
+    }
+    // Otherwise, prepend /uploads/
+    return `/uploads/${pic}`;
 }
 
 function showError(elementId, message) {
@@ -6466,5 +7666,429 @@ function filterUsersInList(listId) {
         const name = item.querySelector('.user-name')?.textContent.toLowerCase() || '';
         item.style.display = name.includes(search) ? '' : 'none';
     });
+}
+
+// Initialize custom audio player
+function initializeAudioPlayer(audioId, audioUrl) {
+    const audioContainer = document.querySelector(`.message-audio[data-audio-id="${audioId}"]`);
+    if (!audioContainer) return;
+    
+    const audioElement = audioContainer.querySelector('.audio-element');
+    const playBtn = audioContainer.querySelector('.audio-play-btn');
+    const waveform = audioContainer.querySelector('.audio-waveform');
+    const waveformBars = audioContainer.querySelector('.waveform-bars');
+    const waveformProgress = audioContainer.querySelector('.waveform-progress');
+    const currentTimeDisplay = audioContainer.querySelector('.audio-current-time');
+    const durationDisplay = audioContainer.querySelector('.audio-duration');
+    const sizeDisplay = audioContainer.querySelector('.audio-size');
+    
+    if (!audioElement || !playBtn || !waveform || !waveformBars) return;
+    
+    // Check if already initialized
+    if (audioContainer.dataset.initialized === 'true') return;
+    audioContainer.dataset.initialized = 'true';
+    
+    let isPlaying = false;
+    let waveformGenerated = false;
+    
+    // Generate waveform bars (simulated)
+    function generateWaveform() {
+        if (waveformGenerated) return;
+        waveformGenerated = true;
+        
+        const barCount = 40;
+        waveformBars.innerHTML = '';
+        
+        for (let i = 0; i < barCount; i++) {
+            const bar = document.createElement('div');
+            bar.className = 'waveform-bar';
+            const height = Math.random() * 60 + 20; // Random height between 20-80%
+            bar.style.height = `${height}%`;
+            waveformBars.appendChild(bar);
+        }
+    }
+    
+    // Format duration
+    function formatDuration(seconds) {
+        const mins = Math.floor(seconds / 60);
+        const secs = Math.floor(seconds % 60);
+        return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+    }
+    
+    // Format file size
+    function formatFileSize(bytes) {
+        if (bytes === 0) return '0 Bytes';
+        const k = 1024;
+        const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+    }
+    
+    // Load audio metadata
+    audioElement.addEventListener('loadedmetadata', () => {
+        const duration = audioElement.duration;
+        if (durationDisplay && !isNaN(duration) && duration > 0) {
+            durationDisplay.textContent = formatDuration(duration);
+        }
+        
+        // Try to get file size from fetch
+        fetch(audioUrl, { method: 'HEAD' })
+            .then(response => {
+                const contentLength = response.headers.get('content-length');
+                if (contentLength && sizeDisplay) {
+                    sizeDisplay.textContent = ', ' + formatFileSize(parseInt(contentLength));
+                } else if (sizeDisplay && !isNaN(duration) && duration > 0) {
+                    // Fallback: estimate from duration (rough estimate)
+                    const estimatedSize = duration * 16000; // Rough estimate for audio
+                    sizeDisplay.textContent = ', ' + formatFileSize(estimatedSize);
+                }
+            })
+            .catch(() => {
+                // Fallback: estimate from duration (rough estimate)
+                if (sizeDisplay && !isNaN(duration) && duration > 0) {
+                    const estimatedSize = duration * 16000; // Rough estimate for audio
+                    sizeDisplay.textContent = ', ' + formatFileSize(estimatedSize);
+                }
+            });
+    });
+    
+    // Also try to load duration on canplay event (fallback)
+    audioElement.addEventListener('canplay', () => {
+        const duration = audioElement.duration;
+        if (durationDisplay && !isNaN(duration) && duration > 0) {
+            if (durationDisplay.textContent === '00:00' || durationDisplay.textContent === '--') {
+                durationDisplay.textContent = formatDuration(duration);
+            }
+        }
+        if (!waveformGenerated) {
+            generateWaveform();
+        }
+    });
+    
+    // Force load metadata if not loaded
+    if (audioElement.readyState >= 1) {
+        const duration = audioElement.duration;
+        if (durationDisplay && !isNaN(duration) && duration > 0) {
+            durationDisplay.textContent = formatDuration(duration);
+        }
+    }
+    
+    // Play/Pause button click
+    playBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        
+        if (!waveformGenerated) {
+            generateWaveform();
+        }
+        
+        if (isPlaying) {
+            audioElement.pause();
+            playBtn.querySelector('i').className = 'fas fa-play';
+        } else {
+            // Pause all other playing audio messages
+            document.querySelectorAll('.message-audio[data-playing="true"]').forEach(otherPlayer => {
+                const otherAudio = otherPlayer.querySelector('.audio-element');
+                if (otherAudio && !otherAudio.paused) {
+                    otherAudio.pause();
+                    otherPlayer.querySelector('.audio-play-btn i').className = 'fas fa-play';
+                    otherPlayer.removeAttribute('data-playing');
+                }
+            });
+            
+            audioElement.play();
+            playBtn.querySelector('i').className = 'fas fa-pause';
+        }
+        isPlaying = !isPlaying;
+        audioContainer.setAttribute('data-playing', isPlaying);
+    });
+    
+    // Update progress and current time
+    audioElement.addEventListener('timeupdate', () => {
+        if (audioElement.duration && !isNaN(audioElement.duration) && audioElement.duration > 0) {
+            const progress = (audioElement.currentTime / audioElement.duration) * 100;
+            waveformProgress.style.width = `${progress}%`;
+            
+            // Update current time display - always update during playback
+            if (currentTimeDisplay) {
+                currentTimeDisplay.textContent = formatDuration(audioElement.currentTime);
+            }
+            
+            // Highlight active bars
+            const bars = waveformBars.querySelectorAll('.waveform-bar');
+            if (bars.length > 0) {
+                const activeIndex = Math.floor((progress / 100) * bars.length);
+                bars.forEach((bar, index) => {
+                    if (index <= activeIndex) {
+                        bar.classList.add('active');
+                    } else {
+                        bar.classList.remove('active');
+                    }
+                });
+            }
+        }
+    });
+    
+    // Also update on play to show current time immediately
+    audioElement.addEventListener('play', () => {
+        isPlaying = true;
+        playBtn.classList.add('playing');
+        playBtn.querySelector('i').className = 'fas fa-pause';
+        // Update current time immediately on play
+        if (currentTimeDisplay && audioElement.currentTime > 0) {
+            currentTimeDisplay.textContent = formatDuration(audioElement.currentTime);
+        }
+    });
+    
+    audioElement.addEventListener('pause', () => {
+        isPlaying = false;
+        playBtn.classList.remove('playing');
+        playBtn.querySelector('i').className = 'fas fa-play';
+    });
+    
+    audioElement.addEventListener('ended', () => {
+        isPlaying = false;
+        playBtn.classList.remove('playing');
+        playBtn.querySelector('i').className = 'fas fa-play';
+        waveformProgress.style.width = '0%';
+        if (currentTimeDisplay) {
+            currentTimeDisplay.textContent = '00:00';
+        }
+        // Reset waveform bars
+        const bars = waveformBars.querySelectorAll('.waveform-bar');
+        bars.forEach(bar => bar.classList.remove('active'));
+    });
+    
+    // Seek on waveform click
+    waveform.addEventListener('click', (e) => {
+        if (audioElement.duration && !isNaN(audioElement.duration) && audioElement.duration > 0) {
+            const rect = waveform.getBoundingClientRect();
+            const clickX = e.clientX - rect.left;
+            const percentage = clickX / rect.width;
+            audioElement.currentTime = percentage * audioElement.duration;
+        }
+    });
+}
+
+// Emoji Picker Functions
+const emojiData = {
+    smileys: ['😀', '😃', '😄', '😁', '😆', '😅', '🤣', '😂', '🙂', '🙃', '😉', '😊', '😇', '🥰', '😍', '🤩', '😘', '😗', '😚', '😙', '😋', '😛', '😜', '🤪', '😝', '🤑', '🤗', '🤭', '🤫', '🤔', '🤐', '🤨', '😐', '😑', '😶', '😏', '😒', '🙄', '😬', '🤥', '😌', '😔', '😪', '🤤', '😴', '😷', '🤒', '🤕', '🤢', '🤮', '🤧', '🥵', '🥶', '😶‍🌫️', '😵', '😵‍💫', '🤯', '🤠', '🥳', '🥸', '😎', '🤓', '🧐', '😕', '😟', '🙁', '☹️', '😮', '😯', '😲', '😳', '🥺', '😦', '😧', '😨', '😰', '😥', '😢', '😭', '😱', '😖', '😣', '😞', '😓', '😩', '😫', '🥱', '😤', '😡', '😠', '🤬', '😈', '👿', '💀', '☠️', '💩', '🤡', '👹', '👺', '👻', '👽', '👾', '🤖', '😺', '😸', '😹', '😻', '😼', '😽', '🙀', '😿', '😾'],
+    people: ['👋', '🤚', '🖐️', '✋', '🖖', '👌', '🤌', '🤏', '✌️', '🤞', '🤟', '🤘', '🤙', '👈', '👉', '👆', '🖕', '👇', '☝️', '👍', '👎', '✊', '👊', '🤛', '🤜', '👏', '🙌', '👐', '🤲', '🤝', '🙏', '✍️', '💪', '🦾', '🦿', '🦵', '🦶', '👂', '🦻', '👃', '🧠', '🫀', '🫁', '🦷', '🦴', '👀', '👁️', '👅', '👄', '💋', '🩸', '👶', '👧', '🧒', '👦', '👩', '🧑', '👨', '👩‍🦱', '👨‍🦱', '👩‍🦰', '👨‍🦰', '👱‍♀️', '👱', '👱‍♂️', '👩‍🦳', '👨‍🦳', '👩‍🦲', '👨‍🦲', '🧔', '👵', '🧓', '👴', '👲', '👳‍♀️', '👳', '👳‍♂️', '🧕', '👮‍♀️', '👮', '👮‍♂️', '👷‍♀️', '👷', '👷‍♂️', '💂‍♀️', '💂', '💂‍♂️', '🕵️‍♀️', '🕵️', '🕵️‍♂️', '👩‍⚕️', '👨‍⚕️', '👩‍🌾', '👨‍🌾', '👩‍🍳', '👨‍🍳', '👩‍🎓', '👨‍🎓', '👩‍🎤', '👨‍🎤', '👩‍🏫', '👨‍🏫', '👩‍🏭', '👨‍🏭', '👩‍💻', '👨‍💻', '👩‍💼', '👨‍💼', '👩‍🔧', '👨‍🔧', '👩‍🔬', '👨‍🔬', '👩‍🎨', '👨‍🎨', '👩‍🚒', '👨‍🚒', '👩‍✈️', '👨‍✈️', '👩‍🚀', '👨‍🚀', '👩‍⚖️', '👨‍⚖️', '👰', '🤵', '👸', '🤴', '🦸‍♀️', '🦸', '🦸‍♂️', '🦹‍♀️', '🦹', '🦹‍♂️', '🤶', '🎅', '🧙‍♀️', '🧙', '🧙‍♂️', '🧝‍♀️', '🧝', '🧝‍♂️', '🧛‍♀️', '🧛', '🧛‍♂️', '🧜‍♀️', '🧜', '🧜‍♂️', '🧚‍♀️', '🧚', '🧚‍♂️', '👼', '🤰', '🤱', '👩‍🍼', '👨‍🍼', '🙇‍♀️', '🙇', '🙇‍♂️', '💁‍♀️', '💁', '💁‍♂️', '🙅‍♀️', '🙅', '🙅‍♂️', '🙆‍♀️', '🙆', '🙆‍♂️', '🙋‍♀️', '🙋', '🙋‍♂️', '🧏‍♀️', '🧏', '🧏‍♂️', '🤦‍♀️', '🤦', '🤦‍♂️', '🤷‍♀️', '🤷', '🤷‍♂️', '👩‍⚕️', '👨‍⚕️', '👩‍🦽', '👨‍🦽', '👩‍🦼', '👨‍🦼', '🧎‍♀️', '🧎', '🧎‍♂️', '🏃‍♀️', '🏃', '🏃‍♂️', '👫', '👭', '👬', '💑', '💏', '👪', '👨‍👩‍👧', '👨‍👩‍👧‍👦', '👨‍👩‍👦‍👦', '👨‍👩‍👧‍👧', '👩‍👩‍👦', '👩‍👩‍👧', '👩‍👩‍👧‍👦', '👩‍👩‍👦‍👦', '👩‍👩‍👧‍👧', '👨‍👨‍👦', '👨‍👨‍👧', '👨‍👨‍👧‍👦', '👨‍👨‍👦‍👦', '👨‍👨‍👧‍👧', '👩‍👦', '👩‍👧', '👩‍👧‍👦', '👩‍👦‍👦', '👩‍👧‍👧', '👨‍👦', '👨‍👧', '👨‍👧‍👦', '👨‍👦‍👦', '👨‍👧‍👧', '👯‍♀️', '👯', '👯‍♂️', '🧘‍♀️', '🧘', '🧘‍♂️', '🛀', '🛌', '👭', '👫', '👬', '💏', '💑', '👪', '👨‍👩‍👧', '👨‍👩‍👧‍👦', '👨‍👩‍👦‍👦', '👨‍👩‍👧‍👧'],
+    animals: ['🐶', '🐱', '🐭', '🐹', '🐰', '🦊', '🐻', '🐼', '🐨', '🐯', '🦁', '🐮', '🐷', '🐽', '🐸', '🐵', '🙈', '🙉', '🙊', '🐒', '🐔', '🐧', '🐦', '🐤', '🐣', '🐥', '🦆', '🦅', '🦉', '🦇', '🐺', '🐗', '🐴', '🦄', '🐝', '🐛', '🦋', '🐌', '🐞', '🐜', '🦟', '🦗', '🕷️', '🦂', '🐢', '🐍', '🦎', '🦖', '🦕', '🐙', '🦑', '🦐', '🦞', '🦀', '🐡', '🐠', '🐟', '🐬', '🐳', '🐋', '🦈', '🐊', '🐅', '🐆', '🦓', '🦍', '🦧', '🐘', '🦛', '🦏', '🐪', '🐫', '🦒', '🦘', '🦡', '🐃', '🐂', '🐄', '🐎', '🐖', '🐏', '🐑', '🦙', '🐐', '🦌', '🐕', '🐩', '🦮', '🐕‍🦺', '🐈', '🐓', '🦃', '🦤', '🦚', '🦜', '🦢', '🦩', '🕊️', '🐇', '🦝', '🦨', '🦦', '🦫', '🐁', '🐀', '🐿️', '🦔', '🐾', '🐉', '🐲'],
+    food: ['🍏', '🍎', '🍐', '🍊', '🍋', '🍌', '🍉', '🍇', '🍓', '🍈', '🍒', '🍑', '🥭', '🍍', '🥥', '🥝', '🍅', '🍆', '🥑', '🥦', '🥬', '🥒', '🌶️', '🌽', '🥕', '🥔', '🍠', '🥐', '🥯', '🍞', '🥖', '🥨', '🧀', '🥚', '🍳', '🥞', '🥓', '🥩', '🍗', '🍖', '🦴', '🌭', '🍔', '🍟', '🍕', '🥪', '🥙', '🌮', '🌯', '🥗', '🥘', '🥫', '🍝', '🍜', '🍲', '🍛', '🍣', '🍱', '🥟', '🦪', '🍤', '🍙', '🍚', '🍘', '🍥', '🥠', '🥮', '🍢', '🍡', '🍧', '🍨', '🍦', '🥧', '🧁', '🍰', '🎂', '🍮', '🍭', '🍬', '🍫', '🍿', '🍩', '🍪', '🌰', '🥜', '🍯', '🥛', '🍼', '☕️', '🍵', '🥤', '🍶', '🍺', '🍻', '🥂', '🍷', '🥃', '🍸', '🍹', '🧃', '🧉', '🧊', '🥄', '🍴', '🍽️', '🥣', '🥡', '🥢'],
+    travel: ['🚗', '🚕', '🚙', '🚌', '🚎', '🏎️', '🚓', '🚑', '🚒', '🚐', '🚚', '🚛', '🚜', '🛴', '🚲', '🛵', '🏍️', '🛺', '🚨', '🚔', '🚍', '🚘', '🚖', '🚡', '🚠', '🚟', '🚃', '🚋', '🚞', '🚝', '🚄', '🚅', '🚈', '🚂', '🚆', '🚇', '🚊', '🚉', '✈️', '🛫', '🛬', '🛩️', '💺', '🚁', '🚟', '🚠', '🚡', '🛰️', '🚀', '🛸', '🛎️', '🧳', '⌛', '⏳', '⌚', '⏰', '⏱️', '⏲️', '🕰️', '🌍', '🌎', '🌏', '🌐', '🗺️', '🧭', '🏔️', '⛰️', '🌋', '🗻', '🏕️', '🏖️', '🏜️', '🏝️', '🏞️', '🏟️', '🏛️', '🏗️', '🧱', '🏘️', '🏚️', '🏠', '🏡', '🏢', '🏣', '🏤', '🏥', '🏦', '🏨', '🏩', '🏪', '🏫', '🏬', '🏭', '🏯', '🏰', '💒', '🗼', '🗽', '⛪', '🕌', '🛕', '🕍', '⛩️', '🕋', '⛲', '⛺', '🌁', '🌃', '🏙️', '🌄', '🌅', '🌆', '🌇', '🌉', '♨️', '🎠', '🎡', '🎢', '💈', '🎪', '🚂', '🚃', '🚄', '🚅', '🚆', '🚇', '🚈', '🚉', '🚊', '🚝', '🚞', '🚟', '🚠', '🚡', '🚀', '🚁'],
+    activities: ['⚽', '🏀', '🏈', '⚾', '🥎', '🎾', '🏐', '🏉', '🥏', '🎱', '🏓', '🏸', '🏒', '🏑', '🥍', '🏏', '🥅', '⛳', '🏹', '🎣', '🥊', '🥋', '🎽', '🛹', '🛷', '⛸️', '🥌', '🎿', '⛷️', '🏂', '🏋️‍♀️', '🏋️', '🏋️‍♂️', '🤼‍♀️', '🤼', '🤼‍♂️', '🤸‍♀️', '🤸', '🤸‍♂️', '⛹️‍♀️', '⛹️', '⛹️‍♂️', '🤺', '🤾‍♀️', '🤾', '🤾‍♂️', '🏌️‍♀️', '🏌️', '🏌️‍♂️', '🏇', '🧘‍♀️', '🧘', '🧘‍♂️', '🏄‍♀️', '🏄', '🏄‍♂️', '🏊‍♀️', '🏊', '🏊‍♂️', '🤽‍♀️', '🤽', '🤽‍♂️', '🚣‍♀️', '🚣', '🚣‍♂️', '🧗‍♀️', '🧗', '🧗‍♂️', '🚵‍♀️', '🚵', '🚵‍♂️', '🚴‍♀️', '🚴', '🚴‍♂️', '🏆', '🥇', '🥈', '🥉', '🏅', '🎖️', '🏵️', '🎗️', '🎫', '🎟️', '🎪', '🤹‍♀️', '🤹', '🤹‍♂️', '🎭', '🩰', '🎨', '🎬', '🎤', '🎧', '🎼', '🎹', '🥁', '🎷', '🎺', '🎸', '🪕', '🎻', '🎲', '♟️', '🎯', '🎳', '🎮', '🎰', '🧩'],
+    objects: ['⌚', '📱', '📲', '💻', '⌨️', '🖥️', '🖨️', '🖱️', '🖲️', '🕹️', '🗜️', '💾', '💿', '📀', '📼', '📷', '📸', '📹', '🎥', '📽️', '🎞️', '📞', '☎️', '📟', '📠', '📺', '📻', '🎙️', '🎚️', '🎛️', '⏱️', '⏲️', '⏰', '🕰️', '⌛', '⏳', '📡', '🔋', '🔌', '💡', '🔦', '🕯️', '🧯', '🛢️', '💸', '💵', '💴', '💶', '💷', '💰', '💳', '💎', '⚖️', '🧰', '🔧', '🔨', '⚒️', '🛠️', '⛏️', '🔩', '⚙️', '🧱', '⛓️', '🧲', '🔫', '💣', '🧨', '🪓', '🔪', '🗡️', '⚔️', '🛡️', '🚬', '⚰️', '⚱️', '🏺', '🔮', '📿', '🧿', '💈', '⚗️', '🔭', '🔬', '🕳️', '🩹', '🩺', '💊', '💉', '🩸', '🧬', '🦠', '🧫', '🧪', '🌡️', '🧹', '🧺', '🧻', '🚽', '🚿', '🛁', '🛀', '🧼', '🪒', '🧽', '🧴', '🛎️', '🔑', '🗝️', '🚪', '🪑', '🛋️', '🛏️', '🛌', '🧸', '🖼️', '🛍️', '🛒', '🎁', '🎈', '🎉', '🎊', '🎀', '🎃', '🎄', '🎆', '🎇', '🧨', '✨', '🎈', '🎉', '🎊', '🎁', '🎀', '🎗️', '🎟️', '🎫', '🎖️', '🏆', '🏅', '🥇', '🥈', '🥉'],
+    symbols: ['❤️', '🧡', '💛', '💚', '💙', '💜', '🖤', '🤍', '🤎', '💔', '❣️', '💕', '💞', '💓', '💗', '💖', '💘', '💝', '💟', '☮️', '✝️', '☪️', '🕉️', '☸️', '🕎', '🔯', '🪯', '🛐', '⛎', '♈', '♉', '♊', '♋', '♌', '♍', '♎', '♏', '♐', '♑', '♒', '♓', '🆔', '⚛️', '🉑', '☢️', '☣️', '📴', '📳', '🈶', '🈚', '🈸', '🈺', '🈷️', '✴️', '🆚', '💮', '🉐', '㊙️', '㊗️', '🈴', '🈵', '🈹', '🈲', '🅰️', '🅱️', '🆎', '🆑', '🅾️', '🆘', '❌', '⭕', '🛑', '⛔', '📛', '🚫', '💯', '💢', '♨️', '🚷', '🚯', '🚳', '🚱', '🔞', '📵', '🚭', '❗', '❓', '❕', '❔', '‼️', '⁉️', '🔅', '🔆', '〽️', '⚠️', '🚸', '🔱', '⚜️', '🔰', '♻️', '✅', '🈯', '💹', '❇️', '✳️', '❎', '🌐', '💠', 'Ⓜ️', '🌀', '💤', '🏧', '🚾', '♿', '🅿️', '🈳', '🈂️', '🛂', '🛃', '🛄', '🛅', '🚹', '🚺', '🚼', '🚻', '🚮', '🎦', '📶', '🈁', '🔣', 'ℹ️', '🔤', '🔡', '🔠', '🆖', '🆗', '🆙', '🆒', '🆕', '🆓', '0️⃣', '1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟', '🔢', '#️⃣', '*️⃣', '⏏️', '▶️', '⏸️', '⏯️', '⏹️', '⏺️', '⏭️', '⏮️', '⏩', '⏪', '⏫', '⏬', '◀️', '🔼', '🔽', '➡️', '⬅️', '⬆️', '⬇️', '↗️', '↘️', '↙️', '↖️', '↕️', '↔️', '↪️', '↩️', '⤴️', '⤵️', '🔀', '🔁', '🔂', '🔄', '🔃', '🎵', '🎶', '➕', '➖', '➗', '✖️', '♾️', '💲', '💱', '™️', '©️', '®️', '〰️', '➰', '➿', '🔚', '🔙', '🔛', '🔜', '🔝', '🛐', '🔰', '⭕', '✅', '☑️', '✔️', '❌', '❎', '➖', '➕', '➗', '✖️', '💯', '🔢', '🔟', '9️⃣', '8️⃣', '7️⃣', '6️⃣', '5️⃣', '4️⃣', '3️⃣', '2️⃣', '1️⃣', '0️⃣'],
+    flags: ['🏳️', '🏴', '🏁', '🚩', '🏳️‍🌈', '🏳️‍⚧️', '🇺🇳', '🇦🇫', '🇦🇽', '🇦🇱', '🇩🇿', '🇦🇸', '🇦🇩', '🇦🇴', '🇦🇮', '🇦🇶', '🇦🇬', '🇦🇷', '🇦🇲', '🇦🇼', '🇦🇺', '🇦🇹', '🇦🇿', '🇧🇸', '🇧🇭', '🇧🇩', '🇧🇧', '🇧🇾', '🇧🇪', '🇧🇿', '🇧🇯', '🇧🇲', '🇧🇹', '🇧🇴', '🇧🇦', '🇧🇼', '🇧🇷', '🇮🇴', '🇻🇬', '🇧🇳', '🇧🇬', '🇧🇫', '🇧🇮', '🇨🇻', '🇰🇭', '🇨🇲', '🇨🇦', '🇮🇶', '🇮🇷', '🇮🇪', '🇮🇲', '🇮🇱', '🇮🇹', '🇯🇲', '🇯🇵', '🇯🇪', '🇯🇴', '🇰🇿', '🇰🇪', '🇰🇮', '🇰🇼', '🇰🇬', '🇱🇦', '🇱🇻', '🇱🇧', '🇱🇸', '🇱🇷', '🇱🇾', '🇱🇮', '🇱🇹', '🇱🇺', '🇲🇴', '🇲🇬', '🇲🇼', '🇲🇾', '🇲🇻', '🇲🇱', '🇲🇹', '🇲🇭', '🇲🇶', '🇲🇷', '🇲🇺', '🇾🇹', '🇲🇽', '🇫🇲', '🇲🇩', '🇲🇨', '🇲🇳', '🇲🇪', '🇲🇸', '🇲🇦', '🇲🇿', '🇲🇲', '🇳🇦', '🇳🇷', '🇳🇵', '🇳🇱', '🇳🇨', '🇳🇿', '🇳🇮', '🇳🇪', '🇳🇬', '🇳🇺', '🇳🇫', '🇰🇵', '🇲🇰', '🇲🇵', '🇳🇴', '🇴🇲', '🇵🇰', '🇵🇼', '🇵🇸', '🇵🇦', '🇵🇬', '🇵🇾', '🇵🇪', '🇵🇭', '🇵🇳', '🇵🇱', '🇵🇹', '🇵🇷', '🇶🇦', '🇷🇪', '🇷🇴', '🇷🇺', '🇷🇼', '🇼🇸', '🇸🇲', '🇸🇦', '🇸🇳', '🇷🇸', '🇸🇨', '🇸🇱', '🇸🇬', '🇸🇽', '🇸🇰', '🇸🇮', '🇬🇸', '🇸🇧', '🇸🇴', '🇿🇦', '🇰🇷', '🇸🇸', '🇪🇸', '🇱🇰', '🇧🇱', '🇸🇭', '🇰🇳', '🇱🇨', '🇵🇲', '🇻🇨', '🇸🇩', '🇸🇷', '🇸🇿', '🇸🇪', '🇨🇭', '🇸🇾', '🇹🇼', '🇹🇯', '🇹🇿', '🇹🇭', '🇹🇱', '🇹🇬', '🇹🇰', '🇹🇴', '🇹🇹', '🇹🇳', '🇹🇷', '🇹🇲', '🇹🇨', '🇹🇻', '🇻🇮', '🇺🇬', '🇺🇦', '🇦🇪', '🇬🇧', '🇺🇸', '🇺🇾', '🇺🇿', '🇻🇺', '🇻🇦', '🇻🇪', '🇻🇳', '🇼🇫', '🇪🇭', '🇾🇪', '🇿🇲', '🇿🇼'],
+    premium: ['💎', '👑', '⭐', '🌟', '✨', '💫', '🔥', '💯', '🎯', '🏆', '🥇', '🥈', '🥉', '🎖️', '🏅', '🎗️', '🎁', '🎊', '🎉', '🎈', '🎀', '💍', '💎', '👑', '💐', '🌹', '🌺', '🌻', '🌷', '🌼', '🌸', '💮', '🏵️', '🌴', '🌵', '🌲', '🌳', '🌰', '🌱', '🌿', '☘️', '🍀', '🍁', '🍂', '🍃', '🌾', '🌿', '🍄', '🌰', '🦋', '🐉', '🐲', '🦄', '🦅', '🦆', '🦢', '🦩', '🦚', '🦜', '🦉', '🦇', '🦋', '🐛', '🐝', '🐞', '🦗', '🕷️', '🦂', '🦟', '🦠', '💐', '🌹', '🌺', '🌻', '🌷', '🌼', '🌸', '💮', '🏵️', '🌴', '🌵', '🌲', '🌳', '🌰', '🌱', '🌿', '☘️', '🍀', '🍁', '🍂', '🍃', '🌾', '🌿', '🍄', '🌰', '🦋', '🐉', '🐲', '🦄', '🦅', '🦆', '🦢', '🦩', '🦚', '🦜', '🦉', '🦇', '🦋', '🐛', '🐝', '🐞', '🦗', '🕷️', '🦂', '🦟', '🦠']
+};
+
+// Category titles mapping
+const categoryTitles = {
+    smileys: 'Smileys & Emotion',
+    people: 'People & Body',
+    animals: 'Animals & Nature',
+    food: 'Food & Drink',
+    travel: 'Travel & Places',
+    activities: 'Activities',
+    objects: 'Objects',
+    symbols: 'Symbols',
+    flags: 'Flags',
+    premium: 'Premium Emojis'
+};
+
+// Recently used emojis (stored in localStorage)
+let recentEmojis = JSON.parse(localStorage.getItem('recentEmojis') || '[]');
+
+function initializeEmojiPicker() {
+    const emojiGrid = document.getElementById('emojiGrid');
+    if (!emojiGrid) return;
+    
+    // Load default category (smileys)
+    loadEmojiCategory('smileys');
+    
+    // Load recently used emojis
+    loadRecentEmojis();
+    
+    // Add category button listeners
+    document.querySelectorAll('.emoji-category-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const category = btn.dataset.category;
+            document.querySelectorAll('.emoji-category-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            loadEmojiCategory(category);
+        });
+    });
+    
+    // Add quick access button listeners
+    document.querySelectorAll('.emoji-quick-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const emoji = btn.dataset.emoji;
+            if (emoji) {
+                insertEmoji(emoji);
+            }
+        });
+    });
+    
+    // Add search functionality
+    const searchInput = document.getElementById('emojiSearchInput');
+    if (searchInput) {
+        searchInput.addEventListener('input', (e) => {
+            const query = e.target.value.toLowerCase().trim();
+            if (query) {
+                searchEmojis(query);
+            } else {
+                const activeCategory = document.querySelector('.emoji-category-btn.active')?.dataset.category || 'smileys';
+                loadEmojiCategory(activeCategory);
+            }
+        });
+    }
+}
+
+function loadRecentEmojis() {
+    const recentGrid = document.getElementById('emojiRecentGrid');
+    const recentSection = document.getElementById('emojiRecentSection');
+    if (!recentGrid || !recentSection) return;
+    
+    if (recentEmojis.length === 0) {
+        recentSection.style.display = 'none';
+        return;
+    }
+    
+    recentSection.style.display = 'block';
+    recentGrid.innerHTML = '';
+    
+    // Show last 12 recent emojis
+    recentEmojis.slice(-12).reverse().forEach(emoji => {
+        const emojiBtn = document.createElement('button');
+        emojiBtn.className = 'emoji-item';
+        emojiBtn.textContent = emoji;
+        emojiBtn.title = emoji;
+        emojiBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            insertEmoji(emoji);
+        });
+        recentGrid.appendChild(emojiBtn);
+    });
+}
+
+function addToRecentEmojis(emoji) {
+    // Remove if already exists
+    recentEmojis = recentEmojis.filter(e => e !== emoji);
+    // Add to end
+    recentEmojis.push(emoji);
+    // Keep only last 50
+    if (recentEmojis.length > 50) {
+        recentEmojis = recentEmojis.slice(-50);
+    }
+    // Save to localStorage
+    localStorage.setItem('recentEmojis', JSON.stringify(recentEmojis));
+    // Reload recent emojis display
+    loadRecentEmojis();
+}
+
+function searchEmojis(query) {
+    const emojiGrid = document.getElementById('emojiGrid');
+    const categoryTitle = document.getElementById('emojiCategoryTitle');
+    if (!emojiGrid) return;
+    
+    const allEmojis = [];
+    Object.keys(emojiData).forEach(category => {
+        emojiData[category].forEach(emoji => {
+            allEmojis.push({ emoji, category });
+        });
+    });
+    
+    // Simple search - you can enhance this with emoji names/keywords
+    const filtered = allEmojis.filter(({ emoji }) => 
+        emoji.includes(query) || emoji.toLowerCase().includes(query)
+    );
+    
+    emojiGrid.innerHTML = '';
+    categoryTitle.textContent = `Search Results (${filtered.length})`;
+    
+    filtered.forEach(({ emoji, category }) => {
+        const emojiBtn = document.createElement('button');
+        emojiBtn.className = 'emoji-item' + (category === 'premium' ? ' premium' : '');
+        emojiBtn.textContent = emoji;
+        emojiBtn.title = emoji;
+        emojiBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            insertEmoji(emoji);
+        });
+        emojiGrid.appendChild(emojiBtn);
+    });
+}
+
+function loadEmojiCategory(category) {
+    const emojiGrid = document.getElementById('emojiGrid');
+    const categoryTitle = document.getElementById('emojiCategoryTitle');
+    if (!emojiGrid) return;
+    
+    const emojis = emojiData[category] || [];
+    emojiGrid.innerHTML = '';
+    
+    // Update category title
+    if (categoryTitle) {
+        categoryTitle.textContent = categoryTitles[category] || category;
+    }
+    
+    // Clear search input
+    const searchInput = document.getElementById('emojiSearchInput');
+    if (searchInput) {
+        searchInput.value = '';
+    }
+    
+    emojis.forEach(emoji => {
+        const emojiBtn = document.createElement('button');
+        emojiBtn.className = 'emoji-item' + (category === 'premium' ? ' premium' : '');
+        emojiBtn.textContent = emoji;
+        emojiBtn.title = emoji;
+        emojiBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            insertEmoji(emoji);
+        });
+        emojiGrid.appendChild(emojiBtn);
+    });
+}
+
+function toggleEmojiPicker() {
+    const emojiPicker = document.getElementById('emojiPicker');
+    if (!emojiPicker) return;
+    
+    emojiPicker.classList.toggle('hidden');
+}
+
+function insertEmoji(emoji) {
+    const messageInput = document.getElementById('messageInput');
+    if (!messageInput) return;
+    
+    const cursorPos = messageInput.selectionStart;
+    const textBefore = messageInput.value.substring(0, cursorPos);
+    const textAfter = messageInput.value.substring(cursorPos);
+    
+    messageInput.value = textBefore + emoji + textAfter;
+    messageInput.selectionStart = messageInput.selectionEnd = cursorPos + emoji.length;
+    messageInput.focus();
+    
+    // Add to recent emojis
+    addToRecentEmojis(emoji);
+    
+    // Auto-resize textarea
+    messageInput.style.height = 'auto';
+    messageInput.style.height = messageInput.scrollHeight + 'px';
+    
+    // Add visual feedback
+    const emojiPicker = document.getElementById('emojiPicker');
+    if (emojiPicker && !emojiPicker.classList.contains('hidden')) {
+        // Optional: close picker after selection on mobile
+        if (window.innerWidth <= 768) {
+            setTimeout(() => {
+                emojiPicker.classList.add('hidden');
+            }, 200);
+        }
+    }
 }
 
